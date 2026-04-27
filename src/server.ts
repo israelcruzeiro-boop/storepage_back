@@ -1,14 +1,20 @@
-import 'dotenv/config';
 import { buildApp } from './app.js';
-
-const port = Number(process.env.PORT || 3333);
-const host = '0.0.0.0';
+import { getEnv } from './config/env.js';
 
 async function start() {
-  const app = buildApp();
+  const env = getEnv();
+  const app = buildApp(env);
 
   try {
-    await app.listen({ port, host });
+    await app.listen({ port: env.PORT, host: env.HOST });
+    app.log.info(
+      {
+        host: env.HOST,
+        port: env.PORT,
+        apiPrefix: env.API_PREFIX,
+      },
+      'StorePage_back listening',
+    );
   } catch (error) {
     app.log.error(error);
     process.exit(1);

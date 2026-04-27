@@ -1,20 +1,26 @@
 import Fastify from 'fastify';
-import { registerHealthRoutes } from './routes/health.js';
+import { getEnv, type AppEnv } from './config/env.js';
+import { buildAppContainer, type BuildAppContainerOptions } from './lib/app-container.js';
+import { buildLoggerConfig } from './lib/logger.js';
+import { registerBasePlugins } from './plugins/register-base-plugins.js';
+import { registerRoutes } from './routes/index.js';
 
-export function buildApp() {
+export type BuildAppOptions = BuildAppContainerOptions;
+
+export function buildApp(env: AppEnv = getEnv(), options: BuildAppOptions = {}) {
+  const container = buildAppContainer(env, options);
   const app = Fastify({
-    logger: true,
+    logger: buildLoggerConfig(env),
+    requestTimeout: env.REQUEST_TIMEOUT_MS,
+    trustProxy: true,
   });
 
-  app.get('/', async () => {
-    return {
-      name: 'storepage-back',
-      status: 'ok',
-      message: 'Backend base ready for StorePage decoupling.',
-    };
-  });
+  app.decorate('config', env);
+  app.decorate('repositories', container.repositories);
+  app.decorate('services', container.services);
 
-  registerHealthRoutes(app);
+  void registerBasePlugins(app);
+  void app.register(registerRoutes);
 
   return app;
 }
