@@ -3,7 +3,9 @@ import test from 'node:test';
 import { SignJWT } from 'jose';
 import { buildApp } from '../src/app.js';
 import { parseEnv, type AppEnv } from '../src/config/env.js';
+import { INVITE_ACTIVATION_COOKIE_NAME, REFRESH_TOKEN_COOKIE_NAME } from '../src/lib/auth-cookies.js';
 import { PasswordService } from '../src/lib/passwords.js';
+import { sanitizeHtml } from '../src/lib/sanitize-html.js';
 
 const SHARED_SECRET = '0123456789abcdef0123456789abcdef';
 const COMPANY_ALPHA_ID = '11111111-1111-4111-8111-111111111111';
@@ -51,7 +53,19 @@ interface ErrorResponse {
   code: string;
 }
 
-function createJwtEnv(): AppEnv {
+test('HTML content sanitizer removes executable markup before course HTML is rendered', () => {
+  const dirtyHtml =
+    '<p onclick="alert(1)">Hello</p><script>alert(1)</script><a href="javascript:alert(1)">click</a><img src="x" onerror="alert(1)">';
+  const sanitized = sanitizeHtml(dirtyHtml);
+
+  assert.equal(sanitized.includes('<script'), false);
+  assert.equal(sanitized.includes('onclick'), false);
+  assert.equal(sanitized.includes('onerror'), false);
+  assert.equal(sanitized.includes('javascript:'), false);
+  assert.match(sanitized, /<p>Hello<\/p>/);
+});
+
+function createJwtEnv(overrides: Partial<Record<string, string>> = {}): AppEnv {
   return parseEnv({
     NODE_ENV: 'test',
     HOST: '127.0.0.1',
@@ -74,6 +88,7 @@ function createJwtEnv(): AppEnv {
     ACCESS_TOKEN_TTL_MINUTES: '15',
     REFRESH_TOKEN_TTL_DAYS: '14',
     PUBLIC_TENANT_CACHE_TTL_SECONDS: '60',
+    ...overrides,
   });
 }
 
@@ -660,8 +675,24 @@ async function createFixtureApp() {
   return { app, env };
 }
 
-async function loginAsAdminAlpha(app: ReturnType<typeof buildApp>) {
-  const response = await app.inject({
+function readSetCookieHeader(headers: Record<string, unknown>): string {
+  const rawHeader = headers['set-cookie'];
+  assert.ok(rawHeader, 'Expected Set-Cookie header');
+  return Array.isArray(rawHeader) ? String(rawHeader[0]) : String(rawHeader);
+}
+
+function readSetCookieHeaders(headers: Record<string, unknown>): string[] {
+  const rawHeader = headers['set-cookie'];
+  assert.ok(rawHeader, 'Expected Set-Cookie header');
+  return Array.isArray(rawHeader) ? rawHeader.map(String) : [String(rawHeader)];
+}
+
+function readRefreshCookiePair(headers: Record<string, unknown>): string {
+  return readSetCookieHeader(headers).split(';')[0]!;
+}
+
+async function injectAdminAlphaLogin(app: ReturnType<typeof buildApp>) {
+  return await app.inject({
     method: 'POST',
     url: '/api/auth/login',
     payload: {
@@ -670,11 +701,14 @@ async function loginAsAdminAlpha(app: ReturnType<typeof buildApp>) {
       company_slug: 'alpha-store',
     },
   });
+}
+
+async function loginAsAdminAlpha(app: ReturnType<typeof buildApp>) {
+  const response = await injectAdminAlphaLogin(app);
 
   assert.equal(response.statusCode, 200);
   return response.json() as SuccessResponse<{
     accessToken: string;
-    refreshToken: string;
     user: { id: string; role: string };
     company: { id: string; slug: string };
   }>;
@@ -694,7 +728,6 @@ async function loginAsUserAlpha(app: ReturnType<typeof buildApp>) {
   assert.equal(response.statusCode, 200);
   return response.json() as SuccessResponse<{
     accessToken: string;
-    refreshToken: string;
     user: { id: string; role: string };
     company: { id: string; slug: string };
   }>;
@@ -714,7 +747,6 @@ async function loginAsSuperAdminAlpha(app: ReturnType<typeof buildApp>) {
   assert.equal(response.statusCode, 200);
   return response.json() as SuccessResponse<{
     accessToken: string;
-    refreshToken: string;
     user: { id: string; role: string };
     company: { id: string; slug: string };
   }>;
@@ -726,8 +758,25 @@ test('login returns session bundle and protected endpoints resolve the tenant co
     await app.close();
   });
 
-  const login = await loginAsAdminAlpha(app);
+  const loginResponse = await injectAdminAlphaLogin(app);
+  assert.equal(loginResponse.statusCode, 200);
+  const setCookieHeader = readSetCookieHeader(loginResponse.headers as Record<string, unknown>);
+  assert.match(setCookieHeader, new RegExp(`^${REFRESH_TOKEN_COOKIE_NAME}=`));
+  assert.match(setCookieHeader, /HttpOnly/);
+  assert.match(setCookieHeader, /SameSite=Lax/);
+  assert.match(setCookieHeader, /Path=\/api\/auth/);
+  assert.doesNotMatch(setCookieHeader, /Secure/);
+
+  const login = loginResponse.json() as SuccessResponse<{
+    accessToken: string;
+    refreshToken?: string;
+    refreshTokenExpiresAt?: string;
+    company: { slug: string };
+  }>;
   assert.equal(login.data.company.slug, 'alpha-store');
+  assert.equal(login.data.refreshToken, undefined);
+  assert.equal(login.data.refreshTokenExpiresAt, undefined);
+  assert.equal(loginResponse.body.includes('refreshToken'), false);
 
   const meResponse = await app.inject({
     method: 'GET',
@@ -759,7 +808,44 @@ test('login returns session bundle and protected endpoints resolve the tenant co
   assert.equal(currentCompanyPayload.data.supportEmail, 'support@alpha.test');
 });
 
-test('login requires an explicit exact company slug', async (t) => {
+test('CORS credentials use explicit allowed origins and reject wildcard credential config', async (t) => {
+  const env = createJwtEnv({
+    CORS_ORIGINS: 'http://localhost:8080',
+    CORS_ALLOW_CREDENTIALS: 'true',
+  });
+  const seed = await createSeed();
+  const app = buildApp(env, { seed });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const preflightResponse = await app.inject({
+    method: 'OPTIONS',
+    url: '/api/auth/login',
+    headers: {
+      origin: 'http://localhost:8080',
+      'access-control-request-method': 'POST',
+      'access-control-request-headers': 'content-type',
+    },
+  });
+
+  assert.equal(preflightResponse.statusCode, 204);
+  assert.equal(preflightResponse.headers['access-control-allow-origin'], 'http://localhost:8080');
+  assert.notEqual(preflightResponse.headers['access-control-allow-origin'], '*');
+  assert.equal(preflightResponse.headers['access-control-allow-credentials'], 'true');
+
+  assert.throws(
+    () =>
+      createJwtEnv({
+        CORS_ORIGINS: '*',
+        CORS_ALLOW_CREDENTIALS: 'true',
+      }),
+    /CORS_ORIGINS cannot be "\*" when CORS_ALLOW_CREDENTIALS=true/,
+  );
+});
+
+test('login requires tenant for regular users but allows global super admin login', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {
     await app.close();
@@ -776,7 +862,24 @@ test('login requires an explicit exact company slug', async (t) => {
 
   assert.equal(missingTenantResponse.statusCode, 400);
   const missingTenantPayload = missingTenantResponse.json() as ErrorResponse;
-  assert.equal(missingTenantPayload.code, 'VALIDATION_ERROR');
+  assert.equal(missingTenantPayload.code, 'TENANT_REQUIRED');
+
+  const globalSuperAdminResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'super.admin@storepage.com',
+      password: 'Password123!',
+    },
+  });
+
+  assert.equal(globalSuperAdminResponse.statusCode, 200);
+  const globalSuperAdminPayload = globalSuperAdminResponse.json() as SuccessResponse<{
+    user: { id: string; role: string };
+    company: { id: string; slug: string };
+  }>;
+  assert.equal(globalSuperAdminPayload.data.user.role, 'SUPER_ADMIN');
+  assert.equal(globalSuperAdminPayload.data.company.slug, 'alpha-store');
 
   const linkNameResponse = await app.inject({
     method: 'POST',
@@ -868,25 +971,47 @@ test('refresh rotates refresh tokens and invalidates the previous one', async (t
     await app.close();
   });
 
-  const login = await loginAsAdminAlpha(app);
+  const loginResponse = await injectAdminAlphaLogin(app);
+  assert.equal(loginResponse.statusCode, 200);
+  const loginCookiePair = readRefreshCookiePair(loginResponse.headers as Record<string, unknown>);
 
   const refreshResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/refresh',
-    payload: {
-      refreshToken: login.data.refreshToken,
+    headers: {
+      cookie: loginCookiePair,
     },
   });
 
   assert.equal(refreshResponse.statusCode, 200);
-  const refreshPayload = refreshResponse.json() as SuccessResponse<{ refreshToken: string; accessToken: string }>;
-  assert.notEqual(refreshPayload.data.refreshToken, login.data.refreshToken);
+  const refreshPayload = refreshResponse.json() as SuccessResponse<{
+    refreshToken?: string;
+    refreshTokenExpiresAt?: string;
+    accessToken: string;
+  }>;
+  assert.equal(refreshPayload.data.refreshToken, undefined);
+  assert.equal(refreshPayload.data.refreshTokenExpiresAt, undefined);
+  assert.equal(refreshResponse.body.includes('refreshToken'), false);
+  const rotatedCookiePair = readRefreshCookiePair(refreshResponse.headers as Record<string, unknown>);
+  assert.notEqual(rotatedCookiePair, loginCookiePair);
+
+  const bodyRefreshResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/refresh',
+    payload: {
+      refreshToken: 'x'.repeat(64),
+    },
+  });
+
+  assert.equal(bodyRefreshResponse.statusCode, 401);
+  const bodyRefreshPayload = bodyRefreshResponse.json() as ErrorResponse;
+  assert.equal(bodyRefreshPayload.code, 'INVALID_REFRESH_TOKEN');
 
   const staleRefreshResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/refresh',
-    payload: {
-      refreshToken: login.data.refreshToken,
+    headers: {
+      cookie: loginCookiePair,
     },
   });
 
@@ -901,17 +1026,24 @@ test('logout revokes the current session and blocks subsequent authenticated acc
     await app.close();
   });
 
-  const login = await loginAsAdminAlpha(app);
+  const loginResponse = await injectAdminAlphaLogin(app);
+  assert.equal(loginResponse.statusCode, 200);
+  const login = loginResponse.json() as SuccessResponse<{ accessToken: string }>;
 
   const logoutResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/logout',
     headers: {
       authorization: `Bearer ${login.data.accessToken}`,
+      cookie: readRefreshCookiePair(loginResponse.headers as Record<string, unknown>),
     },
   });
 
   assert.equal(logoutResponse.statusCode, 200);
+  const logoutCookieHeader = readSetCookieHeader(logoutResponse.headers as Record<string, unknown>);
+  assert.match(logoutCookieHeader, new RegExp(`^${REFRESH_TOKEN_COOKIE_NAME}=`));
+  assert.match(logoutCookieHeader, /Max-Age=0/);
+  assert.match(logoutCookieHeader, /HttpOnly/);
 
   const meAfterLogoutResponse = await app.inject({
     method: 'GET',
@@ -965,7 +1097,9 @@ test('authenticated requests revalidate active tenant status on every request', 
     await app.close();
   });
 
-  const login = await loginAsAdminAlpha(app);
+  const loginResponse = await injectAdminAlphaLogin(app);
+  assert.equal(loginResponse.statusCode, 200);
+  const login = loginResponse.json() as SuccessResponse<{ accessToken: string }>;
 
   const deactivateResponse = await app.inject({
     method: 'PATCH',
@@ -996,8 +1130,8 @@ test('authenticated requests revalidate active tenant status on every request', 
   const refreshResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/refresh',
-    payload: {
-      refreshToken: login.data.refreshToken,
+    headers: {
+      cookie: readRefreshCookiePair(loginResponse.headers as Record<string, unknown>),
     },
   });
 
@@ -1043,8 +1177,11 @@ test('invite validation and activation create an authenticated user session', as
   });
 
   const inviteValidationResponse = await app.inject({
-    method: 'GET',
-    url: '/api/auth/invites/invite_token_alpha_pending_12345',
+    method: 'POST',
+    url: '/api/auth/invites/session',
+    payload: {
+      token: 'invite_token_alpha_pending_12345',
+    },
   });
 
   assert.equal(inviteValidationResponse.statusCode, 200);
@@ -1054,12 +1191,22 @@ test('invite validation and activation create an authenticated user session', as
   }>;
   assert.equal(inviteValidationPayload.data.invite.id, INVITE_ALPHA_ID);
   assert.equal(inviteValidationPayload.data.availableUnits[0]?.id, UNIT_ALPHA_ID);
+  assert.equal(inviteValidationResponse.body.includes('invite_token_alpha_pending_12345'), false);
+
+  const inviteCookieHeader = readSetCookieHeader(inviteValidationResponse.headers as Record<string, unknown>);
+  assert.match(inviteCookieHeader, new RegExp(`^${INVITE_ACTIVATION_COOKIE_NAME}=`));
+  assert.match(inviteCookieHeader, /HttpOnly/);
+  assert.match(inviteCookieHeader, /SameSite=Lax/);
+  assert.match(inviteCookieHeader, /Path=\/api\/auth\/invites/);
+  assert.doesNotMatch(inviteCookieHeader, /Secure/);
 
   const activationResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/invites/activate',
+    headers: {
+      cookie: inviteCookieHeader.split(';')[0]!,
+    },
     payload: {
-      token: 'invite_token_alpha_pending_12345',
       email: 'invite.alpha@storepage.com',
       cpf: '44444444444',
       password: 'InvitePass123!',
@@ -1071,8 +1218,17 @@ test('invite validation and activation create an authenticated user session', as
   assert.equal(activationResponse.statusCode, 201);
   const activationPayload = activationResponse.json() as SuccessResponse<{
     accessToken: string;
+    refreshToken?: string;
+    refreshTokenExpiresAt?: string;
     user: { email: string; role: string };
   }>;
+  assert.equal(activationPayload.data.refreshToken, undefined);
+  assert.equal(activationPayload.data.refreshTokenExpiresAt, undefined);
+  assert.equal(activationResponse.body.includes('refreshToken'), false);
+  assert.equal(activationResponse.body.includes('invite_token_alpha_pending_12345'), false);
+  const activationCookieHeaders = readSetCookieHeaders(activationResponse.headers as Record<string, unknown>);
+  assert.ok(activationCookieHeaders.some((header) => header.startsWith(`${INVITE_ACTIVATION_COOKIE_NAME}=`) && header.includes('Max-Age=0')));
+  assert.ok(activationCookieHeaders.some((header) => header.startsWith(`${REFRESH_TOKEN_COOKIE_NAME}=`) && header.includes('HttpOnly')));
   assert.equal(activationPayload.data.user.email, 'invite.alpha@storepage.com');
   assert.equal(activationPayload.data.user.role, 'MANAGER');
 
@@ -1088,6 +1244,104 @@ test('invite validation and activation create an authenticated user session', as
   const mePayload = meResponse.json() as SuccessResponse<{ user: { email: string; firstAccess: boolean } }>;
   assert.equal(mePayload.data.user.email, 'invite.alpha@storepage.com');
   assert.equal(mePayload.data.user.firstAccess, false);
+
+  const reusedInviteValidationResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/session',
+    payload: {
+      token: 'invite_token_alpha_pending_12345',
+    },
+  });
+
+  assert.equal(reusedInviteValidationResponse.statusCode, 409);
+});
+
+test('invite activation sessions require valid tokens and final activation requires the HttpOnly cookie', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const invalidPostExchangeResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/session',
+    payload: {
+      token: 'invalid_invite_token_1234567890',
+    },
+  });
+  assert.equal(invalidPostExchangeResponse.statusCode, 404);
+
+  const invalidGetExchangeResponse = await app.inject({
+    method: 'GET',
+    url: '/api/auth/invites/invalid_invite_token_1234567890',
+  });
+  assert.equal(invalidGetExchangeResponse.statusCode, 404);
+
+  const getExchangeResponse = await app.inject({
+    method: 'GET',
+    url: '/api/auth/invites/invite_token_alpha_pending_12345',
+  });
+  assert.equal(getExchangeResponse.statusCode, 200);
+  assert.equal(getExchangeResponse.body.includes('invite_token_alpha_pending_12345'), false);
+
+  const inviteCookieHeader = readSetCookieHeader(getExchangeResponse.headers as Record<string, unknown>);
+  assert.match(inviteCookieHeader, new RegExp(`^${INVITE_ACTIVATION_COOKIE_NAME}=`));
+  assert.match(inviteCookieHeader, /HttpOnly/);
+  assert.match(inviteCookieHeader, /SameSite=Lax/);
+
+  const activationWithoutCookieResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/activate',
+    payload: {
+      email: 'invite.alpha@storepage.com',
+      cpf: '44444444444',
+      password: 'InvitePass123!',
+    },
+  });
+  assert.equal(activationWithoutCookieResponse.statusCode, 401);
+
+  const activationWithBodyTokenResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/activate',
+    headers: {
+      cookie: inviteCookieHeader.split(';')[0]!,
+    },
+    payload: {
+      token: 'invite_token_alpha_pending_12345',
+      email: 'invite.alpha@storepage.com',
+      cpf: '44444444444',
+      password: 'InvitePass123!',
+    },
+  });
+  assert.equal(activationWithBodyTokenResponse.statusCode, 400);
+  const bodyTokenPayload = activationWithBodyTokenResponse.json() as ErrorResponse;
+  assert.equal(bodyTokenPayload.code, 'VALIDATION_ERROR');
+});
+
+test('invite activation cookie is secure in production', async (t) => {
+  const env = createJwtEnv({
+    NODE_ENV: 'production',
+  });
+  const seed = await createSeed();
+  const app = buildApp(env, { seed });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/session',
+    payload: {
+      token: 'invite_token_alpha_pending_12345',
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const cookieHeader = readSetCookieHeader(response.headers as Record<string, unknown>);
+  assert.match(cookieHeader, /HttpOnly/);
+  assert.match(cookieHeader, /SameSite=Lax/);
+  assert.match(cookieHeader, /Secure/);
 });
 
 test('sensitive public auth endpoints apply conservative rate limits', async (t) => {
@@ -1129,22 +1383,20 @@ test('sensitive public auth endpoints apply conservative rate limits', async (t)
       method: 'POST',
       url: '/api/auth/invites/activate',
       payload: {
-        token: 'invite_token_alpha_pending_12345',
-        email: 'wrong.invite@storepage.com',
+        email: 'invite.alpha@storepage.com',
         cpf: '44444444444',
         password: 'InvitePass123!',
       },
     });
 
-    assert.equal(response.statusCode, 400);
+    assert.equal(response.statusCode, 401);
   }
 
   const limitedActivationResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/invites/activate',
     payload: {
-      token: 'invite_token_alpha_pending_12345',
-      email: 'wrong.invite@storepage.com',
+      email: 'invite.alpha@storepage.com',
       cpf: '44444444444',
       password: 'InvitePass123!',
     },

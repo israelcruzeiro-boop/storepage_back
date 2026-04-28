@@ -42,22 +42,21 @@ export const inviteTokenParamsSchema = z.object({
 export const loginBodySchema = z.object({
   identifier: z.string().trim().min(1).max(254),
   password: z.string().min(1).max(128),
-  company_slug: tenantSlugSchema,
-});
-
-export const refreshBodySchema = z.object({
-  refreshToken: z.string().trim().min(32).max(4096),
+  company_slug: tenantSlugSchema.optional(),
 });
 
 export const activateInviteBodySchema = z.object({
-  token: inviteTokenParamsSchema.shape.token,
   email: emailSchema,
   cpf: z.string().trim().optional(),
   password: passwordSchema,
   avatarUrl: nullableUrlSchema.optional(),
   name: personNameSchema.optional(),
   orgUnitId: entityIdSchema.nullable().optional(),
-});
+}).strict();
+
+export const inviteSessionBodySchema = z.object({
+  token: inviteTokenParamsSchema.shape.token,
+}).strict();
 
 export const profileUpdateBodySchema = z
   .object({

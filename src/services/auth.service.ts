@@ -17,7 +17,7 @@ import type { SessionJwtPayload, SessionJwtService } from './session-jwt.service
 interface LoginInput {
   identifier: string;
   password: string;
-  companySlug: string;
+  companySlug?: string;
 }
 
 interface RefreshInput {
@@ -25,7 +25,6 @@ interface RefreshInput {
 }
 
 interface ActivateInviteInput {
-  token: string;
   email: string;
   cpf?: string;
   password: string;
@@ -67,13 +66,19 @@ export class AuthService {
   ) {}
 
   public async login(input: LoginInput): Promise<SessionResponse> {
-    const expectedTenant = await this.companyService.resolveLoginTenantBySlug(input.companySlug);
-    const lookup = buildIdentifierLookup(input.identifier, expectedTenant.id);
+    const expectedTenant = input.companySlug
+      ? await this.companyService.resolveLoginTenantBySlug(input.companySlug)
+      : null;
+    const lookup = buildIdentifierLookup(input.identifier, expectedTenant?.id ?? null);
     const user = await this.userRepository.findByIdentifier(lookup);
 
-    if (!user || user.companyId !== expectedTenant.id) {
-      await this.assertPendingInviteLogin(input.identifier, expectedTenant.id);
+    if (!user || (expectedTenant && user.companyId !== expectedTenant.id)) {
+      await this.assertPendingInviteLogin(input.identifier, expectedTenant?.id ?? null);
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid identifier or password.');
+    }
+
+    if (!expectedTenant && user.role !== 'SUPER_ADMIN') {
+      throw new AppError(400, 'TENANT_REQUIRED', 'Tenant slug is required for this user.');
     }
 
     await this.assertUserCanAuthenticate(user);
@@ -153,21 +158,15 @@ export class AuthService {
   }
 
   public async getInviteByToken(token: string) {
-    const invite = await this.getActiveInvite(token);
-    const [company, units] = await Promise.all([
-      this.companyService.getPublicCompanyById(invite.companyId),
-      this.structureRepository.listUnits(invite.companyId),
-    ]);
-
-    return {
-      invite: toInviteView(invite),
-      company,
-      availableUnits: units.map(toUnitView),
-    };
+    return await this.buildInviteActivationSummary(token);
   }
 
-  public async activateInvite(input: ActivateInviteInput): Promise<SessionResponse> {
-    const invite = await this.getActiveInvite(input.token);
+  public async createInviteActivationSession(token: string) {
+    return await this.buildInviteActivationSummary(token);
+  }
+
+  public async activateInvite(token: string, input: ActivateInviteInput): Promise<SessionResponse> {
+    const invite = await this.getActiveInvite(token);
     const normalizedEmail = normalizeEmail(input.email);
     const normalizedCpf = normalizeCpf(input.cpf) ?? invite.cpf;
 
@@ -245,6 +244,20 @@ export class AuthService {
     });
 
     return await this.createSessionResponse(user);
+  }
+
+  private async buildInviteActivationSummary(token: string) {
+    const invite = await this.getActiveInvite(token);
+    const [company, units] = await Promise.all([
+      this.companyService.getPublicCompanyById(invite.companyId),
+      this.structureRepository.listUnits(invite.companyId),
+    ]);
+
+    return {
+      invite: toInviteView(invite),
+      company,
+      availableUnits: units.map(toUnitView),
+    };
   }
 
   public async updateProfile(actor: AuthenticatedActor, input: UpdateProfileInput) {

@@ -1,13 +1,23 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { requireAuthenticatedRequest } from '../lib/access-control.js';
+import {
+  clearRefreshTokenCookie,
+  clearInviteActivationCookie,
+  getInviteActivationTokenFromCookie,
+  getRefreshTokenFromCookie,
+  removeRefreshTokenFromPayload,
+  setInviteActivationCookie,
+  setRefreshTokenCookie,
+} from '../lib/auth-cookies.js';
+import { AppError } from '../lib/errors.js';
 import { createRateLimitPreHandler } from '../lib/rate-limit.js';
 import {
   activateInviteBodySchema,
   inviteTokenParamsSchema,
+  inviteSessionBodySchema,
   loginBodySchema,
   passwordUpdateBodySchema,
   profileUpdateBodySchema,
-  refreshBodySchema,
   tenantSlugParamsSchema,
 } from '../schemas/auth.js';
 
@@ -40,17 +50,23 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       password: body.password,
       companySlug: body.company_slug,
     });
+    setRefreshTokenCookie(reply, app.config, data.refreshToken, data.refreshTokenExpiresAt);
 
-    return reply.success(data, {
+    return reply.success(removeRefreshTokenFromPayload(data), {
       message: 'Login completed successfully.',
     });
   });
 
   app.post('/auth/refresh', { preHandler: refreshRateLimit }, async (request, reply) => {
-    const body = refreshBodySchema.parse(request.body);
-    const data = await app.services.auth.refresh(body);
+    const refreshToken = getRefreshTokenFromCookie(request);
+    if (!refreshToken) {
+      throw new AppError(401, 'INVALID_REFRESH_TOKEN', 'Refresh token is invalid or expired.');
+    }
 
-    return reply.success(data, {
+    const data = await app.services.auth.refresh({ refreshToken });
+    setRefreshTokenCookie(reply, app.config, data.refreshToken, data.refreshTokenExpiresAt);
+
+    return reply.success(removeRefreshTokenFromPayload(data), {
       message: 'Session refreshed successfully.',
     });
   });
@@ -58,6 +74,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post('/auth/logout', async (request, reply) => {
     const auth = requireAuthenticatedRequest(request);
     const data = await app.services.auth.logout(auth.actor);
+    clearRefreshTokenCookie(reply, app.config);
 
     return reply.success(data, {
       message: 'Session invalidated successfully.',
@@ -84,18 +101,36 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
   app.get('/auth/invites/:token', { preHandler: inviteLookupRateLimit }, async (request, reply) => {
     const params = inviteTokenParamsSchema.parse(request.params);
-    const data = await app.services.auth.getInviteByToken(params.token);
+    const data = await app.services.auth.createInviteActivationSession(params.token);
+    setInviteActivationCookie(reply, app.config, params.token);
 
     return reply.success(data, {
       message: 'Invite validated successfully.',
     });
   });
 
-  app.post('/auth/invites/activate', { preHandler: inviteActivationRateLimit }, async (request, reply) => {
-    const body = activateInviteBodySchema.parse(request.body);
-    const data = await app.services.auth.activateInvite(body);
+  app.post('/auth/invites/session', { preHandler: inviteLookupRateLimit }, async (request, reply) => {
+    const body = inviteSessionBodySchema.parse(request.body);
+    const data = await app.services.auth.createInviteActivationSession(body.token);
+    setInviteActivationCookie(reply, app.config, body.token);
 
     return reply.success(data, {
+      message: 'Invite activation session created successfully.',
+    });
+  });
+
+  app.post('/auth/invites/activate', { preHandler: inviteActivationRateLimit }, async (request, reply) => {
+    const body = activateInviteBodySchema.parse(request.body);
+    const inviteToken = getInviteActivationTokenFromCookie(request);
+    if (!inviteToken) {
+      throw new AppError(401, 'INVITE_INVALID', 'Invite activation session is missing or expired.');
+    }
+
+    const data = await app.services.auth.activateInvite(inviteToken, body);
+    clearInviteActivationCookie(reply, app.config);
+    setRefreshTokenCookie(reply, app.config, data.refreshToken, data.refreshTokenExpiresAt);
+
+    return reply.success(removeRefreshTokenFromPayload(data), {
       statusCode: 201,
       message: 'Invite activated successfully.',
     });

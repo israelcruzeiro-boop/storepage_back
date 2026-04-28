@@ -55,6 +55,7 @@ Backend desacoplado da plataforma StorePage.
   - `20260426_phase1_backend_adapter.sql`
   - `20260427_add_users_onboarding_completed.sql`
   - `20260427_phase5_surveys_adapter.sql`
+  - `20260428_phase7_production_adapter_compat.sql`
 - Services e rotas continuam falando apenas com os contratos em `src/repositories/contracts`.
 - A chave Supabase usada pelo backend deve ser `SUPABASE_SERVICE_ROLE_KEY` somente em ambiente server-side.
 - Uploads passam por `POST /api/storage/upload`; o frontend nao precisa de acesso direto ao Supabase Storage.
@@ -72,6 +73,10 @@ Checklist de smoke test recomendado apos aplicar migrations:
 - surveys, questions, responses e answers
 - upload via `POST /api/storage/upload`
 - Super Admin companies/users/provisionamento
+
+Antes de subir producao com `REPOSITORY_DRIVER=supabase`, valide com chamadas somente leitura via PostgREST usando
+os selects dos adapters. Se qualquer tabela/coluna retornar `42703` ou `404`, aplique as migrations pendentes
+no SQL Editor do Supabase e rode o smoke novamente.
 
 ## Estrutura
 - `src/routes`

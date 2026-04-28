@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
+import { sanitizeHtml } from '../lib/sanitize-html.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type {
   CourseAnswerRecord,
@@ -672,7 +673,7 @@ export class LmsService {
       contentUrl: content.contentUrl,
       filePath: content.filePath,
       sizeBytes: content.sizeBytes,
-      htmlContent: content.htmlContent,
+      htmlContent: content.htmlContent ? sanitizeHtml(content.htmlContent) : null,
       orderIndex: content.orderIndex,
       hasQuiz,
       quizzes: hasQuiz ? [{ id: content.id }] : [],

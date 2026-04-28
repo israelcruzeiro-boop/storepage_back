@@ -2,6 +2,24 @@ import type { FastifyPluginAsync } from 'fastify';
 import { normalizeError } from '../lib/errors.js';
 import { buildErrorResponse } from '../lib/http.js';
 
+function redactSensitiveUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl, 'http://storepage.local');
+    for (const key of ['token', 'activationToken', 'inviteToken']) {
+      if (url.searchParams.has(key)) {
+        url.searchParams.set(key, '[REDACTED]');
+      }
+    }
+
+    return `${url.pathname}${url.search}${url.hash}`.replace(
+      /(\/auth\/invites\/)([A-Za-z0-9_-]{20,})(?=$|[/?#])/g,
+      '$1[REDACTED]',
+    );
+  } catch {
+    return rawUrl.replace(/(\/auth\/invites\/)([A-Za-z0-9_-]{20,})(?=$|[/?#])/g, '$1[REDACTED]');
+  }
+}
+
 export const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
   app.setErrorHandler((error, request, reply) => {
     const normalized = normalizeError(error, app.config);
@@ -36,7 +54,7 @@ export const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
     request.log.info(
       {
         method: request.method,
-        url: request.url,
+        url: redactSensitiveUrl(request.url),
       },
       'Route not found',
     );

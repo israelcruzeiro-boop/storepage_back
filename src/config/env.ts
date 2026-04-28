@@ -121,6 +121,15 @@ const rawEnvSchema = z
     const sharedSecret = parseOptionalString(env.JWT_SHARED_SECRET);
     const jwksUrl = parseOptionalString(env.JWT_JWKS_URL);
     const algorithms = parseDelimitedValues(env.JWT_ALLOWED_ALGORITHMS);
+    const corsOrigins = parseDelimitedValues(env.CORS_ORIGINS);
+
+    if (env.CORS_ALLOW_CREDENTIALS && corsOrigins.includes('*')) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CORS_ORIGINS'],
+        message: 'CORS_ORIGINS cannot be "*" when CORS_ALLOW_CREDENTIALS=true.',
+      });
+    }
 
     if (algorithms.length === 0) {
       context.addIssue({
