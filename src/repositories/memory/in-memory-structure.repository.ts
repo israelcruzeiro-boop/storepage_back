@@ -1,5 +1,9 @@
 import type { OrgTopLevelRecord, OrgUnitRecord } from '../../modules/structure/contracts/structure.types.js';
-import type { StructureRepository } from '../contracts/structure.repository.js';
+import type {
+  InsertParentLevelTransitionInput,
+  InsertParentLevelTransitionResult,
+  StructureRepository,
+} from '../contracts/structure.repository.js';
 import type { InMemoryStore } from './in-memory-store.js';
 
 function isVisible<T extends { deletedAt: string | null }>(entity: T): boolean {
@@ -33,5 +37,40 @@ export class InMemoryStructureRepository implements StructureRepository {
 
   public async saveUnit(unit: OrgUnitRecord): Promise<OrgUnitRecord> {
     return this.store.setUnit(unit);
+  }
+
+  public async insertParentLevelTransition(
+    input: InsertParentLevelTransitionInput,
+  ): Promise<InsertParentLevelTransitionResult> {
+    const now = input.parentTopLevel.updatedAt;
+    const updatedCompany = this.store.setCompany({
+      ...input.company,
+      general: {
+        ...input.company.general,
+        orgLevels: [...input.nextOrgLevels],
+        orgUnitName: input.orgUnitName ?? input.company.general.orgUnitName,
+      },
+      updatedAt: now,
+    });
+
+    const parentTopLevel = this.store.setTopLevel(input.parentTopLevel);
+    const childIds = new Set(input.childTopLevelIds);
+    const movedTopLevels = this.store
+      .listTopLevels()
+      .filter((topLevel) => topLevel.companyId === input.company.id && childIds.has(topLevel.id))
+      .map((topLevel) =>
+        this.store.setTopLevel({
+          ...topLevel,
+          levelIndex: 2,
+          parentId: parentTopLevel.id,
+          updatedAt: now,
+        }),
+      );
+
+    return {
+      parentTopLevel,
+      movedTopLevels,
+      company: updatedCompany,
+    };
   }
 }

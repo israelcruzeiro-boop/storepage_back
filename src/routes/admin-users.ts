@@ -20,7 +20,7 @@ export const adminUsersRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.success(data, {
       statusCode: 201,
-      message: 'Invite created successfully.',
+      message: 'User created successfully.',
     });
   });
 
@@ -31,6 +31,16 @@ export const adminUsersRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.success(data, {
       message: 'Invite cancelled successfully.',
+    });
+  });
+
+  app.post('/admin/users/invites/:id/resend', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const params = inviteIdParamsSchema.parse(request.params);
+    const data = await app.services.adminUsers.resendInvite(auth.actor, params.id);
+
+    return reply.success(data, {
+      message: 'Invite delivery requested successfully.',
     });
   });
 

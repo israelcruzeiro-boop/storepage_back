@@ -1,11 +1,13 @@
 export const courseStatusValues = ['ACTIVE', 'DRAFT', 'ARCHIVED'] as const;
 export const courseAccessTypeValues = ['ALL', 'RESTRICTED'] as const;
+export const courseLayoutTemplateValues = ['focus', 'studio', 'journey'] as const;
 export const courseContentTypeValues = ['PDF', 'IMAGE', 'AUDIO', 'VIDEO', 'DOCUMENT', 'HTML'] as const;
 export const courseQuestionTypeValues = ['MULTIPLE_CHOICE', 'WORD_SEARCH', 'ORDERING', 'HOTSPOT', 'FILE', 'HANGMAN', 'TEXT'] as const;
 export const courseEnrollmentStatusValues = ['IN_PROGRESS', 'COMPLETED', 'DROPPED'] as const;
 
 export type CourseStatus = (typeof courseStatusValues)[number];
 export type CourseAccessType = (typeof courseAccessTypeValues)[number];
+export type CourseLayoutTemplate = (typeof courseLayoutTemplateValues)[number];
 export type CourseContentType = (typeof courseContentTypeValues)[number];
 export type CourseQuestionType = (typeof courseQuestionTypeValues)[number];
 export type CourseEnrollmentStatus = (typeof courseEnrollmentStatusValues)[number];
@@ -27,6 +29,7 @@ export interface CourseRecord {
   targetAudience: string[];
   passingScore: number;
   diplomaTemplate: string;
+  layoutTemplate: CourseLayoutTemplate;
   deletedAt: string | null;
   createdAt: string;
   updatedAt: string;

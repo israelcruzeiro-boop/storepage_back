@@ -32,6 +32,7 @@ export interface LmsRepository {
   saveQuestionOption(option: CourseQuestionOptionRecord): Promise<CourseQuestionOptionRecord>;
 
   findEnrollment(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null>;
+  findEnrollmentIncludingDeleted(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null>;
   findEnrollmentById(companyId: string, enrollmentId: string): Promise<CourseEnrollmentRecord | null>;
   listEnrollments(companyId: string, filters?: { courseId?: string; userId?: string }): Promise<CourseEnrollmentRecord[]>;
   saveEnrollment(enrollment: CourseEnrollmentRecord): Promise<CourseEnrollmentRecord>;

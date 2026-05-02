@@ -6,6 +6,7 @@ loadEnv();
 const nodeEnvSchema = z.enum(['development', 'test', 'production']);
 const repositoryDriverSchema = z.enum(['memory', 'supabase']);
 const jwtAuthModeSchema = z.enum(['disabled', 'shared-secret', 'jwks']);
+const inviteDeliveryProviderSchema = z.enum(['noop', 'smtp']);
 const jwtAlgorithmSchema = z.enum([
   'HS256',
   'HS384',
@@ -114,6 +115,17 @@ const rawEnvSchema = z
     ACCESS_TOKEN_TTL_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(14),
     PUBLIC_TENANT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
+    INVITE_DELIVERY_PROVIDER: inviteDeliveryProviderSchema.default('noop'),
+    INVITE_ACTIVATION_BASE_URL: z.string().trim().min(1).default('http://localhost:8080/ativar-convite'),
+    INVITE_DELIVERY_FROM: z.string().optional(),
+    SMTP_HOST: z.string().optional(),
+    SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
+    SMTP_USER: z.string().optional(),
+    SMTP_PASS: z.string().optional(),
+    SMTP_SECURE: z
+      .enum(['true', 'false'])
+      .default('false')
+      .transform((value) => value === 'true'),
   })
   .superRefine((env, context) => {
     const issuer = parseOptionalString(env.JWT_ISSUER);
@@ -122,6 +134,22 @@ const rawEnvSchema = z
     const jwksUrl = parseOptionalString(env.JWT_JWKS_URL);
     const algorithms = parseDelimitedValues(env.JWT_ALLOWED_ALGORITHMS);
     const corsOrigins = parseDelimitedValues(env.CORS_ORIGINS);
+    const inviteDeliveryFrom = parseOptionalString(env.INVITE_DELIVERY_FROM);
+    const smtpHost = parseOptionalString(env.SMTP_HOST);
+    const smtpUser = parseOptionalString(env.SMTP_USER);
+    const smtpPass = parseOptionalString(env.SMTP_PASS);
+    const inviteActivationBaseUrlResult = z.string().url().safeParse(env.INVITE_ACTIVATION_BASE_URL);
+    const inviteActivationBaseUrl = inviteActivationBaseUrlResult.success
+      ? new URL(env.INVITE_ACTIVATION_BASE_URL)
+      : null;
+
+    if (!inviteActivationBaseUrlResult.success) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['INVITE_ACTIVATION_BASE_URL'],
+        message: 'INVITE_ACTIVATION_BASE_URL must be a valid URL.',
+      });
+    }
 
     if (env.CORS_ALLOW_CREDENTIALS && corsOrigins.includes('*')) {
       context.addIssue({
@@ -129,6 +157,82 @@ const rawEnvSchema = z
         path: ['CORS_ORIGINS'],
         message: 'CORS_ORIGINS cannot be "*" when CORS_ALLOW_CREDENTIALS=true.',
       });
+    }
+
+    if (env.NODE_ENV === 'production') {
+      if (env.JWT_AUTH_MODE === 'disabled') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_AUTH_MODE'],
+          message: 'JWT_AUTH_MODE must be shared-secret or jwks in production.',
+        });
+      }
+
+      if (!env.CORS_ALLOW_CREDENTIALS) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CORS_ALLOW_CREDENTIALS'],
+          message: 'CORS_ALLOW_CREDENTIALS must be true in production for HttpOnly cookie auth.',
+        });
+      }
+
+      if (corsOrigins.includes('*')) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CORS_ORIGINS'],
+          message: 'CORS_ORIGINS must list explicit frontend origins in production.',
+        });
+      }
+
+      if (env.INVITE_DELIVERY_PROVIDER === 'noop') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['INVITE_DELIVERY_PROVIDER'],
+          message: 'INVITE_DELIVERY_PROVIDER cannot be noop in production.',
+        });
+      }
+
+      if (inviteActivationBaseUrl && inviteActivationBaseUrl.protocol !== 'https:') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['INVITE_ACTIVATION_BASE_URL'],
+          message: 'INVITE_ACTIVATION_BASE_URL must be HTTPS in production.',
+        });
+      }
+    }
+
+    if (env.INVITE_DELIVERY_PROVIDER === 'smtp') {
+      if (!inviteDeliveryFrom) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['INVITE_DELIVERY_FROM'],
+          message: 'INVITE_DELIVERY_FROM is required when INVITE_DELIVERY_PROVIDER=smtp.',
+        });
+      }
+
+      if (!smtpHost) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SMTP_HOST'],
+          message: 'SMTP_HOST is required when INVITE_DELIVERY_PROVIDER=smtp.',
+        });
+      }
+
+      if (!smtpUser) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SMTP_USER'],
+          message: 'SMTP_USER is required when INVITE_DELIVERY_PROVIDER=smtp.',
+        });
+      }
+
+      if (!smtpPass) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['SMTP_PASS'],
+          message: 'SMTP_PASS is required when INVITE_DELIVERY_PROVIDER=smtp.',
+        });
+      }
     }
 
     if (algorithms.length === 0) {
@@ -214,6 +318,16 @@ const rawEnvSchema = z
         path: ['JWT_JWKS_URL'],
         message: 'JWT_JWKS_URL is required in jwks mode.',
       });
+    } else if (env.JWT_AUTH_MODE === 'jwks' && jwksUrl) {
+      const result = z.string().url().safeParse(jwksUrl);
+
+      if (!result.success) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['JWT_JWKS_URL'],
+          message: 'JWT_JWKS_URL must be a valid URL.',
+        });
+      }
     }
 
     if (env.JWT_AUTH_MODE === 'shared-secret' && jwksUrl) {
@@ -237,6 +351,10 @@ const appEnvSchema = rawEnvSchema.transform((env) => {
   const jwtAudience = parseOptionalString(env.JWT_AUDIENCE);
   const jwtJwksUrl = parseOptionalString(env.JWT_JWKS_URL);
   const jwtSharedSecret = parseOptionalString(env.JWT_SHARED_SECRET);
+  const inviteDeliveryFrom = parseOptionalString(env.INVITE_DELIVERY_FROM);
+  const smtpHost = parseOptionalString(env.SMTP_HOST);
+  const smtpUser = parseOptionalString(env.SMTP_USER);
+  const smtpPass = parseOptionalString(env.SMTP_PASS);
 
   return {
     NODE_ENV: env.NODE_ENV,
@@ -277,6 +395,18 @@ const appEnvSchema = rawEnvSchema.transform((env) => {
       refreshTokenTtlDays: env.REFRESH_TOKEN_TTL_DAYS,
     },
     PUBLIC_TENANT_CACHE_TTL_SECONDS: env.PUBLIC_TENANT_CACHE_TTL_SECONDS,
+    INVITE_DELIVERY: {
+      provider: env.INVITE_DELIVERY_PROVIDER,
+      activationBaseUrl: env.INVITE_ACTIVATION_BASE_URL,
+      from: inviteDeliveryFrom ?? null,
+      smtp: {
+        host: smtpHost ?? null,
+        port: env.SMTP_PORT,
+        user: smtpUser ?? null,
+        pass: smtpPass ?? null,
+        secure: env.SMTP_SECURE,
+      },
+    },
   };
 });
 

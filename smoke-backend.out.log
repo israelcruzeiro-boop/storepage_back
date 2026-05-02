@@ -1,0 +1,20 @@
+
+> storepage-back@0.1.0 start
+> node dist/server.js
+
+{"level":30,"time":"2026-04-30T03:50:25.274Z","service":"storepage-back","environment":"development","msg":"Server listening at http://127.0.0.1:3333"}
+{"level":30,"time":"2026-04-30T03:50:25.276Z","service":"storepage-back","environment":"development","msg":"Server listening at http://192.168.192.1:3333"}
+{"level":30,"time":"2026-04-30T03:50:25.276Z","service":"storepage-back","environment":"development","msg":"Server listening at http://192.168.1.168:3333"}
+{"level":30,"time":"2026-04-30T03:50:25.276Z","service":"storepage-back","environment":"development","msg":"Server listening at http://172.22.16.1:3333"}
+{"level":30,"time":"2026-04-30T03:50:25.276Z","service":"storepage-back","environment":"development","host":"0.0.0.0","port":3333,"apiPrefix":"/api","msg":"StorePage_back listening"}
+{"level":30,"time":"2026-04-30T03:50:39.813Z","service":"storepage-back","environment":"development","reqId":"req-1","req":{"method":"GET","url":"/api/health","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","requestId":"req-1"},"msg":"incoming request"}
+{"level":30,"time":"2026-04-30T03:50:39.816Z","service":"storepage-back","environment":"development","reqId":"req-1","method":"GET","url":"/api/health","msg":"Route not found"}
+{"level":30,"time":"2026-04-30T03:50:39.820Z","service":"storepage-back","environment":"development","reqId":"req-1","res":{"statusCode":404},"responseTime":5.618200063705444,"msg":"request completed"}
+{"level":30,"time":"2026-04-30T03:51:11.415Z","service":"storepage-back","environment":"development","reqId":"req-2","req":{"method":"POST","url":"/api/auth/login","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","requestId":"req-2"},"msg":"incoming request"}
+{"level":30,"time":"2026-04-30T03:51:11.469Z","service":"storepage-back","environment":"development","reqId":"req-3","req":{"method":"POST","url":"/api/auth/login","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","requestId":"req-3"},"msg":"incoming request"}
+{"level":30,"time":"2026-04-30T03:51:11.550Z","service":"storepage-back","environment":"development","reqId":"req-4","req":{"method":"GET","url":"/health","host":"127.0.0.1:3333","remoteAddress":"127.0.0.1","requestId":"req-4"},"msg":"incoming request"}
+{"level":30,"time":"2026-04-30T03:51:11.551Z","service":"storepage-back","environment":"development","reqId":"req-4","res":{"statusCode":200},"responseTime":0.9340000152587891,"msg":"request completed"}
+{"level":40,"time":"2026-04-30T03:51:12.694Z","service":"storepage-back","environment":"development","reqId":"req-3","code":"INVALID_CREDENTIALS","msg":"Request rejected"}
+{"level":30,"time":"2026-04-30T03:51:12.696Z","service":"storepage-back","environment":"development","reqId":"req-3","res":{"statusCode":401},"responseTime":1226.0300002098083,"msg":"request completed"}
+{"level":40,"time":"2026-04-30T03:51:12.698Z","service":"storepage-back","environment":"development","reqId":"req-2","code":"INVALID_CREDENTIALS","msg":"Request rejected"}
+{"level":30,"time":"2026-04-30T03:51:12.699Z","service":"storepage-back","environment":"development","reqId":"req-2","res":{"statusCode":401},"responseTime":1282.9210000038147,"msg":"request completed"}

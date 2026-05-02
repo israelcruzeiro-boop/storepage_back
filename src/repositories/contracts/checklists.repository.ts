@@ -8,10 +8,29 @@ import type {
   ChecklistSubmissionRecord,
 } from '../../modules/checklists/contracts/checklists.types.js';
 
+export interface IncludeDeletedOptions {
+  includeDeleted?: boolean;
+}
+
+export type ChecklistQuestionPatch = Partial<
+  Pick<
+    ChecklistQuestionRecord,
+    | 'sectionId'
+    | 'questionText'
+    | 'questionType'
+    | 'required'
+    | 'configuration'
+    | 'orderIndex'
+    | 'deletedAt'
+  >
+> & {
+  updatedAt: string;
+};
+
 export interface ChecklistsRepository {
   /* Checklists */
-  listChecklists(companyId: string): Promise<ChecklistRecord[]>;
-  findChecklistById(companyId: string, checklistId: string): Promise<ChecklistRecord | null>;
+  listChecklists(companyId: string, options?: IncludeDeletedOptions): Promise<ChecklistRecord[]>;
+  findChecklistById(companyId: string, checklistId: string, options?: IncludeDeletedOptions): Promise<ChecklistRecord | null>;
   saveChecklist(checklist: ChecklistRecord): Promise<ChecklistRecord>;
 
   /* Folders */
@@ -20,15 +39,16 @@ export interface ChecklistsRepository {
   saveFolder(folder: ChecklistFolderRecord): Promise<ChecklistFolderRecord>;
 
   /* Sections */
-  listSections(checklistId: string): Promise<ChecklistSectionRecord[]>;
-  findSectionById(sectionId: string): Promise<ChecklistSectionRecord | null>;
+  listSections(checklistId: string, options?: IncludeDeletedOptions): Promise<ChecklistSectionRecord[]>;
+  findSectionById(sectionId: string, options?: IncludeDeletedOptions): Promise<ChecklistSectionRecord | null>;
   saveSection(section: ChecklistSectionRecord): Promise<ChecklistSectionRecord>;
 
   /* Questions */
-  listQuestions(sectionId: string): Promise<ChecklistQuestionRecord[]>;
-  listQuestionsByChecklistId(checklistId: string): Promise<ChecklistQuestionRecord[]>;
-  findQuestionById(questionId: string): Promise<ChecklistQuestionRecord | null>;
+  listQuestions(sectionId: string, options?: IncludeDeletedOptions): Promise<ChecklistQuestionRecord[]>;
+  listQuestionsByChecklistId(checklistId: string, options?: IncludeDeletedOptions): Promise<ChecklistQuestionRecord[]>;
+  findQuestionById(questionId: string, options?: IncludeDeletedOptions): Promise<ChecklistQuestionRecord | null>;
   saveQuestion(question: ChecklistQuestionRecord): Promise<ChecklistQuestionRecord>;
+  patchQuestion(questionId: string, patch: ChecklistQuestionPatch): Promise<ChecklistQuestionRecord>;
 
   /* Submissions */
   listSubmissions(companyId: string, filters?: { checklistId?: string; userId?: string }): Promise<ChecklistSubmissionRecord[]>;

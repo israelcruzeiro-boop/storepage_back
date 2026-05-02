@@ -7,22 +7,22 @@ import type {
   ChecklistSectionRecord,
   ChecklistSubmissionRecord,
 } from '../../modules/checklists/contracts/checklists.types.js';
-import type { ChecklistsRepository } from '../contracts/checklists.repository.js';
+import type { ChecklistQuestionPatch, ChecklistsRepository } from '../contracts/checklists.repository.js';
 import type { InMemoryStore } from './in-memory-store.js';
 
 export class InMemoryChecklistsRepository implements ChecklistsRepository {
   public constructor(private readonly store: InMemoryStore) {}
 
   /* Checklists */
-  public async listChecklists(companyId: string): Promise<ChecklistRecord[]> {
+  public async listChecklists(companyId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord[]> {
     return this.store
       .listChecklists()
-      .filter((c) => c.companyId === companyId && !c.deletedAt);
+      .filter((c) => c.companyId === companyId && (options?.includeDeleted || !c.deletedAt));
   }
 
-  public async findChecklistById(companyId: string, checklistId: string): Promise<ChecklistRecord | null> {
+  public async findChecklistById(companyId: string, checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord | null> {
     const record = this.store.getChecklist(checklistId);
-    if (!record || record.companyId !== companyId || record.deletedAt) return null;
+    if (!record || record.companyId !== companyId || (!options?.includeDeleted && record.deletedAt)) return null;
     return record;
   }
 
@@ -48,16 +48,16 @@ export class InMemoryChecklistsRepository implements ChecklistsRepository {
   }
 
   /* Sections */
-  public async listSections(checklistId: string): Promise<ChecklistSectionRecord[]> {
+  public async listSections(checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistSectionRecord[]> {
     return this.store
       .listChecklistSections()
-      .filter((s) => s.checklistId === checklistId && !s.deletedAt)
+      .filter((s) => s.checklistId === checklistId && (options?.includeDeleted || !s.deletedAt))
       .sort((a, b) => a.orderIndex - b.orderIndex);
   }
 
-  public async findSectionById(sectionId: string): Promise<ChecklistSectionRecord | null> {
+  public async findSectionById(sectionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistSectionRecord | null> {
     const record = this.store.getChecklistSection(sectionId);
-    if (!record || record.deletedAt) return null;
+    if (!record || (!options?.includeDeleted && record.deletedAt)) return null;
     return record;
   }
 
@@ -66,30 +66,36 @@ export class InMemoryChecklistsRepository implements ChecklistsRepository {
   }
 
   /* Questions */
-  public async listQuestions(sectionId: string): Promise<ChecklistQuestionRecord[]> {
+  public async listQuestions(sectionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord[]> {
     return this.store
       .listChecklistQuestions()
-      .filter((q) => q.sectionId === sectionId && !q.deletedAt)
+      .filter((q) => q.sectionId === sectionId && (options?.includeDeleted || !q.deletedAt))
       .sort((a, b) => a.orderIndex - b.orderIndex);
   }
 
-  public async listQuestionsByChecklistId(checklistId: string): Promise<ChecklistQuestionRecord[]> {
-    const sections = await this.listSections(checklistId);
-    const sectionIds = new Set(sections.map((s) => s.id));
+  public async listQuestionsByChecklistId(checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord[]> {
     return this.store
       .listChecklistQuestions()
-      .filter((q) => sectionIds.has(q.sectionId) && !q.deletedAt)
+      .filter((q) => q.checklistId === checklistId && (options?.includeDeleted || !q.deletedAt))
       .sort((a, b) => a.orderIndex - b.orderIndex);
   }
 
-  public async findQuestionById(questionId: string): Promise<ChecklistQuestionRecord | null> {
+  public async findQuestionById(questionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord | null> {
     const record = this.store.getChecklistQuestion(questionId);
-    if (!record || record.deletedAt) return null;
+    if (!record || (!options?.includeDeleted && record.deletedAt)) return null;
     return record;
   }
 
   public async saveQuestion(question: ChecklistQuestionRecord): Promise<ChecklistQuestionRecord> {
     return this.store.setChecklistQuestion(question);
+  }
+
+  public async patchQuestion(questionId: string, patch: ChecklistQuestionPatch): Promise<ChecklistQuestionRecord> {
+    const question = this.store.getChecklistQuestion(questionId);
+    if (!question) {
+      throw new Error(`Checklist question ${questionId} not found.`);
+    }
+    return this.store.setChecklistQuestion({ ...question, ...patch });
   }
 
   /* Submissions */

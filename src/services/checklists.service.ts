@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
+import type { RestrictedAccessEvaluator } from '../lib/restricted-access.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type {
   ActionPlanRecord,
@@ -22,6 +23,7 @@ interface ChecklistInput {
   allowedUserIds: string[];
   allowedRegionIds: string[];
   allowedStoreIds: string[];
+  excludedUserIds: string[];
   folderId?: string | null;
 }
 type ChecklistUpdateInput = Partial<ChecklistInput>;
@@ -40,6 +42,11 @@ interface QuestionInput {
   orderIndex: number;
 }
 type QuestionUpdateInput = Partial<QuestionInput>;
+
+type ChecklistQuestionConfiguration = {
+  photo_required?: boolean;
+  photo_policy?: 'ALWAYS' | 'NON_COMPLIANCE' | 'OPTIONAL';
+};
 
 interface AnswerInput {
   value?: unknown | null;
@@ -71,15 +78,34 @@ interface ActionPlanInput {
 type ActionPlanUpdateInput = Partial<ActionPlanInput>;
 
 export class ChecklistsService {
-  public constructor(private readonly repository: ChecklistsRepository) {}
+  public constructor(
+    private readonly repository: ChecklistsRepository,
+    private readonly access: RestrictedAccessEvaluator,
+  ) {}
 
   /* ======================== User-facing ======================== */
 
   public async listChecklists(actor: AuthenticatedActor) {
     const checklists = await this.repository.listChecklists(actor.companyId);
-    return checklists
-      .filter((c) => this.canReadChecklist(actor, c))
-      .map(this.toChecklistView);
+    const readableChecklists = await this.access.filterReadable(actor, checklists);
+    return readableChecklists.map(this.toChecklistView);
+  }
+
+  public async listReadableFolders(actor: AuthenticatedActor) {
+    const checklists = await this.repository.listChecklists(actor.companyId);
+    const readableChecklists = await this.access.filterReadable(actor, checklists);
+    const readableFolderIds = new Set(
+      readableChecklists
+        .map((checklist) => checklist.folderId)
+        .filter((folderId): folderId is string => Boolean(folderId)),
+    );
+
+    if (readableFolderIds.size === 0) return [];
+
+    const folders = await this.repository.listFolders(actor.companyId);
+    return folders
+      .filter((folder) => readableFolderIds.has(folder.id))
+      .map(this.toFolderView);
   }
 
   public async getChecklist(actor: AuthenticatedActor, checklistId: string) {
@@ -138,7 +164,7 @@ export class ChecklistsService {
     const submissions = await this.repository.listSubmissions(actor.companyId, { userId: actor.userId });
     return submissions
       .filter((submission) => !filters?.status || submission.status === filters.status)
-      .map(this.toSubmissionView);
+      .map((submission) => this.toSubmissionView(submission));
   }
 
   public async upsertAnswer(actor: AuthenticatedActor, submissionId: string, questionId: string, input: AnswerInput) {
@@ -148,6 +174,9 @@ export class ChecklistsService {
     }
     const question = await this.repository.findQuestionById(questionId);
     if (!question) throw new AppError(404, 'NOT_FOUND', 'Question not found.');
+    if (question.checklistId !== submission.checklistId) {
+      throw new AppError(404, 'NOT_FOUND', 'Question not found.');
+    }
 
     const existing = await this.repository.findAnswer(submissionId, questionId);
     const now = new Date().toISOString();
@@ -201,6 +230,7 @@ export class ChecklistsService {
     const now = new Date().toISOString();
     const answers = await this.repository.listAnswers(submissionId);
     const questions = await this.repository.listQuestionsByChecklistId(submission.checklistId);
+    this.assertRequiredPhotosHaveAttachments(questions, answers);
     const totalQuestions = questions.length;
     const answeredCount = answers.length;
     const score = totalQuestions > 0 ? Math.round((answeredCount / totalQuestions) * 100) : 100;
@@ -291,11 +321,13 @@ export class ChecklistsService {
       allowedUserIds: input.allowedUserIds,
       allowedRegionIds: input.allowedRegionIds,
       allowedStoreIds: input.allowedStoreIds,
+      excludedUserIds: input.excludedUserIds,
       folderId: input.folderId ?? null,
       deletedAt: null,
       createdAt: now,
       updatedAt: now,
     };
+    await this.access.assertValidAccessTarget(companyId, checklist);
     return this.toChecklistView(await this.repository.saveChecklist(checklist));
   }
 
@@ -308,6 +340,7 @@ export class ChecklistsService {
       folderId: input.folderId === undefined ? checklist.folderId : input.folderId ?? null,
       updatedAt: new Date().toISOString(),
     };
+    await this.access.assertValidAccessTarget(companyId, next);
     return this.toChecklistView(await this.repository.saveChecklist(next));
   }
 
@@ -407,10 +440,11 @@ export class ChecklistsService {
   }
 
   public async createQuestion(companyId: string, sectionId: string, input: QuestionInput) {
-    await this.getTenantSection(companyId, sectionId);
+    const section = await this.getTenantSection(companyId, sectionId);
     const now = new Date().toISOString();
     const question: ChecklistQuestionRecord = {
       id: randomUUID(),
+      checklistId: section.checklistId,
       sectionId,
       questionText: input.questionText,
       questionType: input.questionType,
@@ -425,14 +459,16 @@ export class ChecklistsService {
   }
 
   public async updateQuestion(companyId: string, questionId: string, input: QuestionUpdateInput) {
-    const question = await this.getTenantQuestion(companyId, questionId);
-    const next: ChecklistQuestionRecord = {
-      ...question,
-      ...input,
-      configuration: input.configuration === undefined ? question.configuration : input.configuration ?? null,
+    await this.getTenantQuestion(companyId, questionId);
+    const patch: Parameters<ChecklistsRepository['patchQuestion']>[1] = {
       updatedAt: new Date().toISOString(),
     };
-    return this.toQuestionView(await this.repository.saveQuestion(next));
+    if ('questionText' in input) patch.questionText = input.questionText;
+    if ('questionType' in input) patch.questionType = input.questionType;
+    if ('required' in input) patch.required = input.required;
+    if ('orderIndex' in input) patch.orderIndex = input.orderIndex;
+    if ('configuration' in input) patch.configuration = input.configuration ?? null;
+    return this.toQuestionView(await this.repository.patchQuestion(questionId, patch));
   }
 
   public async deleteQuestion(companyId: string, questionId: string) {
@@ -442,12 +478,22 @@ export class ChecklistsService {
     return { deleted: true, id: questionId };
   }
 
-  public async reorderQuestions(companyId: string, items: Array<{ id: string; orderIndex: number }>) {
+  public async reorderQuestions(companyId: string, items: Array<{ id: string; orderIndex: number; sectionId?: string | null }>) {
     const results = await Promise.all(
       items.map(async (item) => {
         const question = await this.getTenantQuestion(companyId, item.id);
+        let sectionId = question.sectionId;
+        if (item.sectionId !== undefined) {
+          sectionId = item.sectionId;
+          if (sectionId) {
+            const section = await this.getTenantSection(companyId, sectionId);
+            if (section.checklistId !== question.checklistId) {
+              throw new AppError(400, 'BAD_REQUEST', 'Question cannot be moved to another checklist.');
+            }
+          }
+        }
         return this.toQuestionView(
-          await this.repository.saveQuestion({ ...question, orderIndex: item.orderIndex, updatedAt: new Date().toISOString() }),
+          await this.repository.saveQuestion({ ...question, sectionId, orderIndex: item.orderIndex, updatedAt: new Date().toISOString() }),
         );
       }),
     );
@@ -459,10 +505,14 @@ export class ChecklistsService {
     companyId: string,
     filters?: { checklistId?: string; userId?: string; status?: ChecklistSubmissionRecord['status'] },
   ) {
-    const submissions = await this.repository.listSubmissions(companyId, filters);
+    const [submissions, checklists] = await Promise.all([
+      this.repository.listSubmissions(companyId, filters),
+      this.repository.listChecklists(companyId, { includeDeleted: true }),
+    ]);
+    const checklistById = new Map(checklists.map((checklist) => [checklist.id, checklist]));
     return submissions
       .filter((submission) => !filters?.status || submission.status === filters.status)
-      .map(this.toSubmissionView);
+      .map((submission) => this.toSubmissionView(submission, checklistById.get(submission.checklistId)));
   }
 
   public async adminGetSubmission(companyId: string, submissionId: string) {
@@ -470,35 +520,55 @@ export class ChecklistsService {
     if (!submission || submission.companyId !== companyId || submission.deletedAt) {
       throw new AppError(404, 'NOT_FOUND', 'Submission not found.');
     }
-    const answers = await this.repository.listAnswers(submission.id);
-    const submissionView = this.toSubmissionView(submission);
+    const [checklist, sections, questions, answers] = await Promise.all([
+      this.repository.findChecklistById(companyId, submission.checklistId, { includeDeleted: true }),
+      this.repository.listSections(submission.checklistId, { includeDeleted: true }),
+      this.repository.listQuestionsByChecklistId(submission.checklistId, { includeDeleted: true }),
+      this.repository.listAnswers(submission.id),
+    ]);
+    if (!checklist) throw new AppError(404, 'NOT_FOUND', 'Submission not found.');
+    const submissionView = this.toSubmissionView(submission, checklist);
+    const sectionViews = sections.map((section) => ({
+      ...this.toSectionView(section),
+      questions: questions
+        .filter((question) => question.sectionId === section.id)
+        .map((question) => this.toQuestionView(question)),
+    }));
     return {
       ...submissionView,
       submission: submissionView,
+      checklist: this.toChecklistView(checklist),
+      sections: sectionViews,
+      questions: questions.map((question) => this.toQuestionView(question)),
       answers: answers.map(this.toAnswerView),
     };
   }
 
   public async getDashboard(companyId: string) {
-    const [checklists, submissions, actionPlans] = await Promise.all([
+    const [checklists, historicalChecklists, submissions, actionPlans] = await Promise.all([
       this.repository.listChecklists(companyId),
+      this.repository.listChecklists(companyId, { includeDeleted: true }),
       this.repository.listSubmissions(companyId),
       this.repository.listActionPlans(companyId),
     ]);
-    const sectionsByChecklist = await Promise.all(checklists.map((checklist) => this.repository.listSections(checklist.id)));
-    const sections = sectionsByChecklist.flat();
-    const questionsByChecklist = await Promise.all(checklists.map((checklist) => this.repository.listQuestionsByChecklistId(checklist.id)));
+    const checklistById = new Map(historicalChecklists.map((checklist) => [checklist.id, checklist]));
+    const submittedChecklistIds = new Set(submissions.map((submission) => submission.checklistId));
+    const reportChecklists = historicalChecklists.filter((checklist) => submittedChecklistIds.has(checklist.id) || !checklist.deletedAt);
+    const questionsByChecklist = await Promise.all(
+      reportChecklists.map((checklist) =>
+        this.repository.listQuestionsByChecklistId(checklist.id, { includeDeleted: submittedChecklistIds.has(checklist.id) }),
+      ),
+    );
     const questions = questionsByChecklist.flat();
     const answersBySubmission = await Promise.all(submissions.map((submission) => this.repository.listAnswers(submission.id)));
     const answers = answersBySubmission.flat();
     const submissionById = new Map(submissions.map((submission) => [submission.id, submission]));
     const questionById = new Map(questions.map((question) => [question.id, question]));
-    const sectionById = new Map(sections.map((section) => [section.id, section]));
     const completed = submissions.filter((s) => s.status === 'COMPLETED');
     const avgScore = completed.length > 0
       ? Math.round(completed.reduce((sum, s) => sum + (s.score ?? 0), 0) / completed.length)
       : 0;
-    const questionViews = questions.map((question) => this.toQuestionView(question, sectionById.get(question.sectionId)?.checklistId));
+    const questionViews = questions.map((question) => this.toQuestionView(question));
     const answerViews = answers.map((answer) => this.toAnswerView(answer));
     return {
       totalChecklists: checklists.length,
@@ -506,19 +576,19 @@ export class ChecklistsService {
       totalCompleted: completed.length,
       completionRate: submissions.length > 0 ? Math.round((completed.length / submissions.length) * 100) : 0,
       avgScore,
-      submissions: submissions.map(this.toSubmissionView),
+      submissions: submissions.map((submission) => this.toSubmissionView(submission, checklistById.get(submission.checklistId))),
       answers: answerViews,
       questions: questionViews,
       detailedAnswers: answers.map((answer) => ({
         ...this.toAnswerView(answer),
         checklistSubmissions: submissionById.has(answer.submissionId)
-          ? this.toSubmissionView(submissionById.get(answer.submissionId)!)
+          ? this.toSubmissionView(
+              submissionById.get(answer.submissionId)!,
+              checklistById.get(submissionById.get(answer.submissionId)!.checklistId),
+            )
           : null,
         checklistQuestions: questionById.has(answer.questionId)
-          ? this.toQuestionView(
-              questionById.get(answer.questionId)!,
-              sectionById.get(questionById.get(answer.questionId)!.sectionId)?.checklistId,
-            )
+          ? this.toQuestionView(questionById.get(answer.questionId)!)
           : null,
       })),
       actionPlans: actionPlans.map(this.toActionPlanView),
@@ -527,16 +597,48 @@ export class ChecklistsService {
 
   /* ======================== Private ======================== */
 
-  private canReadChecklist(actor: AuthenticatedActor, checklist: ChecklistRecord): boolean {
-    if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return true;
-    if (checklist.status !== 'ACTIVE') return false;
-    if (checklist.accessType === 'ALL') return true;
-    return checklist.allowedUserIds.length === 0 || checklist.allowedUserIds.includes(actor.userId);
+  private assertRequiredPhotosHaveAttachments(
+    questions: ChecklistQuestionRecord[],
+    answers: ChecklistAnswerRecord[],
+  ) {
+    const answerByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer]));
+    const missingPhotoQuestions = questions.filter((question) => {
+      const config = this.toQuestionConfiguration(question.configuration);
+      if (!config.photo_required) return false;
+      if (question.questionType === 'DATE' || question.questionType === 'TIME') return false;
+      const answer = answerByQuestionId.get(question.id);
+      if (!this.shouldRequirePhoto(config, answer)) return false;
+      return !answer?.attachmentUrls?.length;
+    });
+
+    if (missingPhotoQuestions.length > 0) {
+      throw new AppError(400, 'BAD_REQUEST', 'Required photo evidence is missing.', {
+        missingQuestionIds: missingPhotoQuestions.map((question) => question.id),
+      });
+    }
+  }
+
+  private toQuestionConfiguration(configuration: unknown): ChecklistQuestionConfiguration {
+    if (!configuration || typeof configuration !== 'object' || Array.isArray(configuration)) return {};
+    const value = configuration as Record<string, unknown>;
+    const photoPolicy = value.photo_policy;
+    return {
+      photo_required: value.photo_required === true,
+      photo_policy:
+        photoPolicy === 'ALWAYS' || photoPolicy === 'NON_COMPLIANCE' || photoPolicy === 'OPTIONAL'
+          ? photoPolicy
+          : undefined,
+    };
+  }
+
+  private shouldRequirePhoto(config: ChecklistQuestionConfiguration, answer: ChecklistAnswerRecord | undefined) {
+    if (config.photo_policy === 'NON_COMPLIANCE') return answer?.value === 'NC' || answer?.conformity === 'NON_CONFORMING';
+    return true;
   }
 
   private async getReadableChecklist(actor: AuthenticatedActor, checklistId: string) {
     const checklist = await this.getTenantChecklist(actor.companyId, checklistId);
-    if (!this.canReadChecklist(actor, checklist)) {
+    if (!(await this.access.canRead(actor, checklist))) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have permission to access this checklist.');
     }
     return checklist;
@@ -567,9 +669,7 @@ export class ChecklistsService {
     const question = await this.repository.findQuestionById(questionId);
     if (!question) throw new AppError(404, 'NOT_FOUND', 'Checklist question not found.');
     // verify via section → checklist → tenant
-    const section = await this.repository.findSectionById(question.sectionId);
-    if (!section) throw new AppError(404, 'NOT_FOUND', 'Checklist question not found.');
-    const checklist = await this.repository.findChecklistById(companyId, section.checklistId);
+    const checklist = await this.repository.findChecklistById(companyId, question.checklistId);
     if (!checklist) throw new AppError(404, 'NOT_FOUND', 'Checklist question not found.');
     return question;
   }
@@ -605,6 +705,7 @@ export class ChecklistsService {
       allowedUserIds: checklist.allowedUserIds,
       allowedRegionIds: checklist.allowedRegionIds,
       allowedStoreIds: checklist.allowedStoreIds,
+      excludedUserIds: checklist.excludedUserIds,
       folderId: checklist.folderId,
       createdAt: checklist.createdAt,
       updatedAt: checklist.updatedAt,
@@ -636,7 +737,7 @@ export class ChecklistsService {
   private toQuestionView(question: ChecklistQuestionRecord, checklistId?: string) {
     return {
       id: question.id,
-      checklistId: checklistId ?? null,
+      checklistId: checklistId ?? question.checklistId,
       sectionId: question.sectionId,
       text: question.questionText,
       questionText: question.questionText,
@@ -651,7 +752,7 @@ export class ChecklistsService {
     };
   }
 
-  private toSubmissionView(submission: ChecklistSubmissionRecord) {
+  private toSubmissionView(submission: ChecklistSubmissionRecord, checklist?: ChecklistRecord | null) {
     return {
       id: submission.id,
       checklistId: submission.checklistId,
@@ -664,6 +765,7 @@ export class ChecklistsService {
       completedAt: submission.completedAt,
       createdAt: submission.createdAt,
       updatedAt: submission.updatedAt,
+      checklist: checklist ? { title: checklist.title } : null,
     };
   }
 

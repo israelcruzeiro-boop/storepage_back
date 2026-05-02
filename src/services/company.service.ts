@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
 import { normalizeSlug } from '../lib/normalization.js';
 import { TtlCache } from '../lib/ttl-cache.js';
@@ -8,13 +9,17 @@ import type {
   CompanyRecord,
 } from '../modules/company/contracts/company.types.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
+import type { OrgTopLevelRecord } from '../modules/structure/contracts/structure.types.js';
 import type { CompanyRepository } from '../repositories/contracts/company.repository.js';
+import type { StructureRepository } from '../repositories/contracts/structure.repository.js';
 
 interface UpdateAppearanceInput {
   logoUrl?: string | null;
   faviconUrl?: string | null;
   theme?: Partial<CompanyRecord['branding']['theme']>;
   hero?: Partial<CompanyRecord['branding']['hero']>;
+  landingPageActive?: boolean;
+  landingPageLayout?: string | null;
 }
 
 type UpdateFeaturesInput = Partial<CompanyFeatureFlags>;
@@ -28,11 +33,19 @@ interface UpdateGeneralInput {
   supportEmail?: string | null;
 }
 
+interface InsertParentLevelInput {
+  orgLevels: string[];
+  orgUnitName?: string;
+  parentName: string;
+  childTopLevelIds: string[];
+}
+
 export class CompanyService {
   private readonly publicCompanyCache: TtlCache<string, CompanyPublicView>;
 
   public constructor(
     private readonly companyRepository: CompanyRepository,
+    private readonly structureRepository: StructureRepository,
     publicCacheTtlMs: number,
   ) {
     this.publicCompanyCache = new TtlCache<string, CompanyPublicView>(publicCacheTtlMs);
@@ -161,6 +174,8 @@ export class CompanyService {
           ...input.hero,
         },
       },
+      landingPageActive: input.landingPageActive ?? company.landingPageActive,
+      landingPageLayout: input.landingPageLayout === undefined ? company.landingPageLayout : input.landingPageLayout,
       updatedAt: new Date().toISOString(),
     };
 
@@ -186,6 +201,10 @@ export class CompanyService {
 
   public async updateGeneral(companyId: string, input: UpdateGeneralInput): Promise<CompanyAuthenticatedView> {
     const company = await this.getCompanyRecord(companyId);
+    if (input.orgLevels !== undefined) {
+      await this.assertOrgLevelsCompatible(companyId, input.orgLevels);
+    }
+
     const updatedCompany: CompanyRecord = {
       ...company,
       name: input.name ?? company.name,
@@ -202,6 +221,165 @@ export class CompanyService {
     await this.companyRepository.save(updatedCompany);
     this.invalidatePublicCache(updatedCompany);
     return this.toAuthenticatedView(updatedCompany);
+  }
+
+  public async insertParentLevel(companyId: string, input: InsertParentLevelInput): Promise<CompanyAuthenticatedView> {
+    const company = await this.getCompanyRecord(companyId);
+    const currentOrgLevels = company.general.orgLevels;
+    const nextOrgLevels = input.orgLevels.map((level) => level.trim());
+    const parentName = input.parentName.trim();
+
+    if (currentOrgLevels.length !== 1 || nextOrgLevels.length !== 2) {
+      throw new AppError(
+        400,
+        'BAD_REQUEST',
+        'This transition is only available when inserting a new parent level above an existing single-level hierarchy.',
+      );
+    }
+
+    if (nextOrgLevels[1] !== currentOrgLevels[0]) {
+      throw new AppError(
+        400,
+        'BAD_REQUEST',
+        'The existing hierarchy level must be preserved as the second level during this transition.',
+      );
+    }
+
+    const [topLevels, units] = await Promise.all([
+      this.structureRepository.listTopLevels(companyId),
+      this.structureRepository.listUnits(companyId),
+    ]);
+
+    const existingLevelOneNodes = topLevels.filter((topLevel) => topLevel.levelIndex === 1);
+    const outOfRangeNode = topLevels.find((topLevel) => topLevel.levelIndex !== 1);
+    if (outOfRangeNode) {
+      throw new AppError(
+        409,
+        'RESOURCE_IN_USE',
+        'Cannot insert a parent level because this hierarchy already has nodes outside the current leaf level.',
+      );
+    }
+
+    if (existingLevelOneNodes.length === 0) {
+      throw new AppError(
+        409,
+        'RESOURCE_IN_USE',
+        'Create at least one existing leaf node before starting the parent-level transition.',
+      );
+    }
+
+    const childIds = new Set(input.childTopLevelIds);
+    if (childIds.size !== input.childTopLevelIds.length || childIds.size !== existingLevelOneNodes.length) {
+      throw new AppError(
+        400,
+        'BAD_REQUEST',
+        'Map every existing leaf node exactly once before inserting the new parent level.',
+      );
+    }
+
+    const existingIds = new Set(existingLevelOneNodes.map((topLevel) => topLevel.id));
+    const hasUnknownChild = input.childTopLevelIds.some((id) => !existingIds.has(id));
+    if (hasUnknownChild) {
+      throw new AppError(400, 'BAD_REQUEST', 'One or more mapped hierarchy nodes were not found in this tenant.');
+    }
+
+    this.assertLegacyParentLinksCompatible(existingLevelOneNodes);
+
+    const unitWithInvalidParent = units.find((unit) => unit.topLevelId && !existingIds.has(unit.topLevelId));
+    if (unitWithInvalidParent) {
+      throw new AppError(
+        409,
+        'RESOURCE_IN_USE',
+        'All units must be linked to an existing leaf hierarchy node before inserting a parent level.',
+      );
+    }
+
+    const now = new Date().toISOString();
+    const result = await this.structureRepository.insertParentLevelTransition({
+      company,
+      parentTopLevel: {
+        id: randomUUID(),
+        companyId,
+        name: parentName,
+        levelIndex: 1,
+        parentId: null,
+        deletedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      childTopLevelIds: input.childTopLevelIds,
+      nextOrgLevels,
+      orgUnitName: input.orgUnitName,
+    });
+
+    this.invalidatePublicCache(result.company);
+    return this.toAuthenticatedView(result.company);
+  }
+
+  private assertLegacyParentLinksCompatible(topLevels: OrgTopLevelRecord[]): void {
+    const topLevelsById = new Map(topLevels.map((topLevel) => [topLevel.id, topLevel]));
+
+    for (const topLevel of topLevels) {
+      if (!topLevel.parentId) continue;
+
+      if (!topLevelsById.has(topLevel.parentId)) {
+        throw new AppError(
+          409,
+          'RESOURCE_IN_USE',
+          'Cannot insert a parent level because an existing hierarchy parent belongs to another tenant or no longer exists.',
+        );
+      }
+    }
+
+    for (const topLevel of topLevels) {
+      const visited = new Set<string>();
+      let cursor: OrgTopLevelRecord | undefined = topLevel;
+
+      while (cursor?.parentId) {
+        if (visited.has(cursor.id)) {
+          throw new AppError(
+            409,
+            'RESOURCE_IN_USE',
+            'Cannot insert a parent level because the existing hierarchy contains a parent cycle.',
+          );
+        }
+
+        visited.add(cursor.id);
+        cursor = topLevelsById.get(cursor.parentId);
+      }
+    }
+  }
+
+  private async assertOrgLevelsCompatible(companyId: string, nextOrgLevels: string[]): Promise<void> {
+    const [topLevels, units] = await Promise.all([
+      this.structureRepository.listTopLevels(companyId),
+      this.structureRepository.listUnits(companyId),
+    ]);
+    const nextLeafLevelIndex = nextOrgLevels.length;
+    const outOfRangeTopLevel = topLevels.find((topLevel) => topLevel.levelIndex > nextLeafLevelIndex);
+
+    if (outOfRangeTopLevel) {
+      throw new AppError(
+        409,
+        'RESOURCE_IN_USE',
+        'Cannot update organization levels because existing top-level nodes are outside the new hierarchy configuration.',
+      );
+    }
+
+    const topLevelsById = new Map(topLevels.map((topLevel) => [topLevel.id, topLevel]));
+    const unitLinkedToNonLeaf = units.find((unit) => {
+      if (!unit.topLevelId) return false;
+      const topLevel = topLevelsById.get(unit.topLevelId);
+      return !topLevel || topLevel.levelIndex !== nextLeafLevelIndex;
+    });
+
+    if (unitLinkedToNonLeaf) {
+      throw new AppError(
+        409,
+        'RESOURCE_IN_USE',
+        'Cannot update organization levels because existing units would be linked to a non-leaf hierarchy level.',
+      );
+    }
   }
 
   private toPublicView(company: CompanyRecord): CompanyPublicView {

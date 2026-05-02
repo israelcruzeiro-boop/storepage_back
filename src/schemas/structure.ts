@@ -40,3 +40,12 @@ export const updateUnitBodySchema = z
   .refine((value) => Object.values(value).some((entry) => entry !== undefined), {
     message: 'At least one unit field must be provided.',
   });
+
+export const insertParentLevelTransitionBodySchema = z
+  .object({
+    orgLevels: z.array(z.string().trim().min(2).max(60)).length(2),
+    orgUnitName: z.string().trim().min(2).max(60).optional(),
+    parentName: personNameSchema,
+    childTopLevelIds: z.array(entityIdSchema).min(1),
+  })
+  .strict();

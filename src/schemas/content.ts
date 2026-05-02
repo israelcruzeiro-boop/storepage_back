@@ -6,7 +6,13 @@ import {
   repositoryTypeValues,
   simpleLinkStatusValues,
 } from '../modules/content/contracts/content.types.js';
-import { entityIdSchema, nullableUrlSchema, shortTextSchema } from './shared.js';
+import {
+  entityIdSchema,
+  nullableUrlSchema,
+  restrictedAccessBodyHasTarget,
+  restrictedAccessTargetMessage,
+  shortTextSchema,
+} from './shared.js';
 
 const idArraySchema = z.array(entityIdSchema).default([]);
 const optionalNullableUrlSchema = nullableUrlSchema.optional();
@@ -39,7 +45,7 @@ export const simpleLinkListQuerySchema = z.object({
   repositoryId: entityIdSchema.optional(),
 });
 
-export const createRepositoryBodySchema = z.object({
+const repositoryBodySchema = z.object({
   name: shortTextSchema,
   description: z.string().trim().max(2000).default(''),
   type: z.enum(repositoryTypeValues).default('FULL'),
@@ -57,9 +63,17 @@ export const createRepositoryBodySchema = z.object({
   excludedUserIds: idArraySchema,
 });
 
-export const updateRepositoryBodySchema = createRepositoryBodySchema.partial().refine(
+export const createRepositoryBodySchema = repositoryBodySchema.refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
+
+export const updateRepositoryBodySchema = repositoryBodySchema.partial().refine(
   (value) => Object.values(value).some((entry) => entry !== undefined),
   { message: 'At least one repository field must be provided.' },
+).refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
 );
 
 export const createCategoryBodySchema = z.object({
@@ -118,6 +132,10 @@ export const recordRatingBodySchema = z.object({
 });
 
 export const repositoryMetricsQuerySchema = z.object({
+  repositoryId: entityIdSchema.optional(),
+});
+
+export const contentMetricSummariesQuerySchema = z.object({
   repositoryId: entityIdSchema.optional(),
 });
 

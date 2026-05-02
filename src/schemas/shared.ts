@@ -26,3 +26,21 @@ export const paginationQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   search: z.string().trim().max(120).optional(),
 });
+
+interface RestrictedAccessBody {
+  accessType?: 'ALL' | 'RESTRICTED';
+  allowedUserIds?: readonly unknown[];
+  allowedRegionIds?: readonly unknown[];
+  allowedStoreIds?: readonly unknown[];
+}
+
+export function restrictedAccessBodyHasTarget(value: RestrictedAccessBody): boolean {
+  return Boolean(
+    value.allowedUserIds?.length ||
+      value.allowedRegionIds?.length ||
+      value.allowedStoreIds?.length,
+  );
+}
+
+export const restrictedAccessTargetMessage =
+  'Restricted access requires at least one allowed user, region, or store.';

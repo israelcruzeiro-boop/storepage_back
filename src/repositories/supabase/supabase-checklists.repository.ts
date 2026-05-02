@@ -7,19 +7,22 @@ import type {
   ChecklistSectionRecord,
   ChecklistSubmissionRecord,
 } from '../../modules/checklists/contracts/checklists.types.js';
-import type { ChecklistsRepository } from '../contracts/checklists.repository.js';
-import type { SupabaseRestClient } from './supabase-rest-client.js';
+import type { ChecklistQuestionPatch, ChecklistsRepository } from '../contracts/checklists.repository.js';
+import { SupabaseRestError, type SupabaseRestClient } from './supabase-rest-client.js';
 import {
   ACTION_PLAN_SELECT,
   CHECKLIST_ANSWER_SELECT,
   CHECKLIST_FOLDER_SELECT,
   CHECKLIST_QUESTION_SELECT,
+  CHECKLIST_QUESTION_COMPAT_SELECT,
+  CHECKLIST_QUESTION_LEGACY_SELECT,
   CHECKLIST_SECTION_SELECT,
   CHECKLIST_SELECT,
   CHECKLIST_SUBMISSION_SELECT,
   type ActionPlanRow,
   type ChecklistAnswerRow,
   type ChecklistFolderRow,
+  type ChecklistQuestionColumnMode,
   type ChecklistQuestionRow,
   type ChecklistRow,
   type ChecklistSectionRow,
@@ -27,6 +30,7 @@ import {
   fromActionPlanRecord,
   fromChecklistAnswerRecord,
   fromChecklistFolderRecord,
+  fromChecklistQuestionPatch,
   fromChecklistQuestionRecord,
   fromChecklistRecord,
   fromChecklistSectionRecord,
@@ -44,26 +48,28 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
   public constructor(private readonly client: SupabaseRestClient) {}
 
   /* Checklists */
-  public async listChecklists(companyId: string): Promise<ChecklistRecord[]> {
+  public async listChecklists(companyId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord[]> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'company_id', operator: 'eq', value: companyId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
     const result = await this.client.select<ChecklistRow>('checklists', {
       select: CHECKLIST_SELECT,
-      filters: [
-        { column: 'company_id', operator: 'eq', value: companyId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+      filters,
       order: [{ column: 'created_at', ascending: false }],
     });
     return result.rows.map(toChecklistRecord);
   }
 
-  public async findChecklistById(companyId: string, checklistId: string): Promise<ChecklistRecord | null> {
+  public async findChecklistById(companyId: string, checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord | null> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'id', operator: 'eq', value: checklistId },
+      { column: 'company_id', operator: 'eq', value: companyId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
     const row = await this.client.selectOne<ChecklistRow>('checklists', {
       select: CHECKLIST_SELECT,
-      filters: [
-        { column: 'id', operator: 'eq', value: checklistId },
-        { column: 'company_id', operator: 'eq', value: companyId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+      filters,
     });
     return row ? toChecklistRecord(row) : null;
   }
@@ -108,25 +114,27 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
   }
 
   /* Sections */
-  public async listSections(checklistId: string): Promise<ChecklistSectionRecord[]> {
+  public async listSections(checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistSectionRecord[]> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'checklist_id', operator: 'eq', value: checklistId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
     const result = await this.client.select<ChecklistSectionRow>('checklist_sections', {
       select: CHECKLIST_SECTION_SELECT,
-      filters: [
-        { column: 'checklist_id', operator: 'eq', value: checklistId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+      filters,
       order: [{ column: 'order_index', ascending: true }],
     });
     return result.rows.map(toChecklistSectionRecord);
   }
 
-  public async findSectionById(sectionId: string): Promise<ChecklistSectionRecord | null> {
+  public async findSectionById(sectionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistSectionRecord | null> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'id', operator: 'eq', value: sectionId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
     const row = await this.client.selectOne<ChecklistSectionRow>('checklist_sections', {
       select: CHECKLIST_SECTION_SELECT,
-      filters: [
-        { column: 'id', operator: 'eq', value: sectionId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+      filters,
     });
     return row ? toChecklistSectionRecord(row) : null;
   }
@@ -139,49 +147,91 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
   }
 
   /* Questions */
-  public async listQuestions(sectionId: string): Promise<ChecklistQuestionRecord[]> {
-    const result = await this.client.select<ChecklistQuestionRow>('checklist_questions', {
-      select: CHECKLIST_QUESTION_SELECT,
-      filters: [
-        { column: 'section_id', operator: 'eq', value: sectionId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+  public async listQuestions(sectionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord[]> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'section_id', operator: 'eq', value: sectionId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
+    const result = await this.selectChecklistQuestions({
+      filters,
       order: [{ column: 'order_index', ascending: true }],
     });
     return result.rows.map(toChecklistQuestionRecord);
   }
 
-  public async listQuestionsByChecklistId(checklistId: string): Promise<ChecklistQuestionRecord[]> {
-    const sections = await this.listSections(checklistId);
-    if (sections.length === 0) return [];
-    const sectionIds = sections.map((s) => s.id);
-    const result = await this.client.select<ChecklistQuestionRow>('checklist_questions', {
-      select: CHECKLIST_QUESTION_SELECT,
-      filters: [
-        { column: 'section_id', operator: 'in', value: sectionIds },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+  public async listQuestionsByChecklistId(checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord[]> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'checklist_id', operator: 'eq', value: checklistId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
+    const result = await this.selectChecklistQuestions({
+      filters,
       order: [{ column: 'order_index', ascending: true }],
     });
     return result.rows.map(toChecklistQuestionRecord);
   }
 
-  public async findQuestionById(questionId: string): Promise<ChecklistQuestionRecord | null> {
-    const row = await this.client.selectOne<ChecklistQuestionRow>('checklist_questions', {
-      select: CHECKLIST_QUESTION_SELECT,
-      filters: [
-        { column: 'id', operator: 'eq', value: questionId },
-        { column: 'deleted_at', operator: 'is', value: null },
-      ],
+  public async findQuestionById(questionId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistQuestionRecord | null> {
+    const filters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'id', operator: 'eq', value: questionId },
+    ];
+    if (!options?.includeDeleted) filters.push({ column: 'deleted_at', operator: 'is', value: null });
+    const row = await this.selectOneChecklistQuestion({
+      filters,
     });
     return row ? toChecklistQuestionRecord(row) : null;
   }
 
   public async saveQuestion(question: ChecklistQuestionRecord): Promise<ChecklistQuestionRecord> {
-    const row = await this.client.upsert<ChecklistQuestionRow>('checklist_questions', fromChecklistQuestionRecord(question), {
-      select: CHECKLIST_QUESTION_SELECT,
-    });
+    const row = await this.writeChecklistQuestion((mode) => this.client.upsert<ChecklistQuestionRow>('checklist_questions', fromChecklistQuestionRecord(question, mode), {
+      select: this.checklistQuestionSelect(mode),
+    }));
     return toChecklistQuestionRecord(row);
+  }
+
+  public async patchQuestion(questionId: string, patch: ChecklistQuestionPatch): Promise<ChecklistQuestionRecord> {
+    const row = await this.writeChecklistQuestion((mode) => this.client.update<ChecklistQuestionRow>('checklist_questions', fromChecklistQuestionPatch(patch, mode), {
+      select: this.checklistQuestionSelect(mode),
+      filters: [{ column: 'id', operator: 'eq', value: questionId }],
+    }));
+    return toChecklistQuestionRecord(row);
+  }
+
+  private async selectChecklistQuestions(options: Omit<Parameters<SupabaseRestClient['select']>[1], 'select'>) {
+    return this.withChecklistQuestionColumns((mode) => this.client.select<ChecklistQuestionRow>('checklist_questions', {
+      ...options,
+      select: this.checklistQuestionSelect(mode),
+    }));
+  }
+
+  private async selectOneChecklistQuestion(options: Omit<Parameters<SupabaseRestClient['selectOne']>[1], 'select'>) {
+    return this.withChecklistQuestionColumns((mode) => this.client.selectOne<ChecklistQuestionRow>('checklist_questions', {
+      ...options,
+      select: this.checklistQuestionSelect(mode),
+    }));
+  }
+
+  private async writeChecklistQuestion(operation: (mode: ChecklistQuestionColumnMode) => Promise<ChecklistQuestionRow>) {
+    return this.withChecklistQuestionColumns(operation);
+  }
+
+  private async withChecklistQuestionColumns<T>(operation: (mode: ChecklistQuestionColumnMode) => Promise<T>): Promise<T> {
+    let lastError: unknown;
+    for (const mode of ['compatible', 'modern', 'legacy'] as const) {
+      try {
+        return await operation(mode);
+      } catch (error) {
+        if (!isChecklistQuestionColumnCompatibilityError(error)) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError;
+  }
+
+  private checklistQuestionSelect(mode: ChecklistQuestionColumnMode): string {
+    if (mode === 'compatible') return CHECKLIST_QUESTION_COMPAT_SELECT;
+    if (mode === 'legacy') return CHECKLIST_QUESTION_LEGACY_SELECT;
+    return CHECKLIST_QUESTION_SELECT;
   }
 
   /* Submissions */
@@ -279,4 +329,20 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
     });
     return toActionPlanRecord(row);
   }
+}
+
+function isChecklistQuestionColumnCompatibilityError(error: unknown): boolean {
+  if (!(error instanceof SupabaseRestError)) return false;
+  if (error.status !== 400) return false;
+  const body = JSON.stringify(error.body).toLowerCase();
+  return (
+    body.includes('checklist_questions') &&
+    (body.includes('column') || body.includes('schema cache') || body.includes('pgrst204')) &&
+    (body.includes('text') ||
+      body.includes('type') ||
+      body.includes('config') ||
+      body.includes('question_text') ||
+      body.includes('question_type') ||
+      body.includes('configuration'))
+  );
 }

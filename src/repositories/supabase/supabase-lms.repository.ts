@@ -247,6 +247,19 @@ export class SupabaseLmsRepository implements LmsRepository {
     return row ? toCourseEnrollmentRecord(row) : null;
   }
 
+  public async findEnrollmentIncludingDeleted(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null> {
+    const row = await this.client.selectOne<CourseEnrollmentRow>('course_enrollments', {
+      select: COURSE_ENROLLMENT_SELECT,
+      filters: [
+        { column: 'company_id', operator: 'eq', value: companyId },
+        { column: 'course_id', operator: 'eq', value: courseId },
+        { column: 'user_id', operator: 'eq', value: userId },
+      ],
+      order: [{ column: 'updated_at', ascending: false }],
+    });
+    return row ? toCourseEnrollmentRecord(row) : null;
+  }
+
   public async findEnrollmentById(companyId: string, enrollmentId: string): Promise<CourseEnrollmentRecord | null> {
     const row = await this.client.selectOne<CourseEnrollmentRow>('course_enrollments', {
       select: COURSE_ENROLLMENT_SELECT,

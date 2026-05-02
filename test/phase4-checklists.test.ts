@@ -174,12 +174,12 @@ async function createSeed() {
     ],
     checklistQuestions: [
       {
-        id: QUESTION_ALPHA_ID, sectionId: SECTION_ALPHA_ID, questionText: 'Is the store clean?',
+        id: QUESTION_ALPHA_ID, checklistId: CHECKLIST_ALPHA_ID, sectionId: SECTION_ALPHA_ID, questionText: 'Is the store clean?',
         questionType: 'YES_NO' as const, required: true, configuration: null,
         orderIndex: 0, deletedAt: null, createdAt: now, updatedAt: now,
       },
       {
-        id: QUESTION_ALPHA_2_ID, sectionId: SECTION_ALPHA_ID, questionText: 'Rate the lighting',
+        id: QUESTION_ALPHA_2_ID, checklistId: CHECKLIST_ALPHA_ID, sectionId: SECTION_ALPHA_ID, questionText: 'Rate the lighting',
         questionType: 'RATING' as const, required: false, configuration: { min: 1, max: 5 },
         orderIndex: 1, deletedAt: null, createdAt: now, updatedAt: now,
       },
@@ -257,6 +257,17 @@ test('phase 4 user checklist listing respects tenant isolation', async (t) => {
   const userBody = userRes.json() as SuccessResponse<unknown[]>;
   assert.ok(userBody.data.length >= 1);
 
+  const userFoldersRes = await app.inject({
+    method: 'GET', url: '/api/checklist-folders',
+    headers: { authorization: `Bearer ${userLogin.data.accessToken}` },
+  });
+  assert.equal(userFoldersRes.statusCode, 200);
+  const userFoldersBody = userFoldersRes.json() as SuccessResponse<Array<{ id: string; companyId: string; name: string }>>;
+  assert.equal(userFoldersBody.data.length, 1);
+  assert.equal(userFoldersBody.data[0].id, FOLDER_ALPHA_ID);
+  assert.equal(userFoldersBody.data[0].companyId, COMPANY_ALPHA_ID);
+  assert.equal(userFoldersBody.data[0].name, 'Operacional');
+
   // Admin Beta sees only Beta checklists
   const betaRes = await app.inject({
     method: 'GET', url: '/api/checklists',
@@ -330,7 +341,7 @@ test('phase 4 admin CRUD for checklist, folder, section, question', async (t) =>
   // --- Question CRUD ---
   const createQuestionRes = await app.inject({
     method: 'POST', url: `/api/admin/checklist-sections/${section.id}/questions`,
-    headers: auth, payload: { questionText: 'Everything OK?', questionType: 'YES_NO', required: true },
+    headers: auth, payload: { questionText: 'Everything OK?', questionType: 'COMPLIANCE', required: true },
   });
   assert.equal(createQuestionRes.statusCode, 201);
   const question = (createQuestionRes.json() as SuccessResponse<{ id: string; questionText: string }>).data;
@@ -342,6 +353,42 @@ test('phase 4 admin CRUD for checklist, folder, section, question', async (t) =>
   });
   assert.equal(updateQuestionRes.statusCode, 200);
   assert.equal((updateQuestionRes.json() as SuccessResponse<{ questionText: string }>).data.questionText, 'All good?');
+});
+
+test('phase 4 checklist question type stays CHECK after configuration update', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => { await app.close(); });
+
+  const login = await loginAsAdminAlpha(app);
+  const auth = { authorization: `Bearer ${login.data.accessToken}` };
+
+  const createQuestionRes = await app.inject({
+    method: 'POST', url: `/api/admin/checklist-sections/${SECTION_ALPHA_ID}/questions`,
+    headers: auth, payload: { questionText: 'Confirm item?', questionType: 'COMPLIANCE', required: false },
+  });
+  assert.equal(createQuestionRes.statusCode, 201);
+  const question = (createQuestionRes.json() as SuccessResponse<{ id: string; questionType: string; type: string }>).data;
+  assert.equal(question.questionType, 'COMPLIANCE');
+
+  const updateTypeRes = await app.inject({
+    method: 'PUT', url: `/api/admin/checklist-questions/${question.id}`,
+    headers: auth, payload: { questionType: 'CHECK' },
+  });
+  assert.equal(updateTypeRes.statusCode, 200);
+  const checkQuestion = (updateTypeRes.json() as SuccessResponse<{ questionType: string; type: string }>).data;
+  assert.equal(checkQuestion.questionType, 'CHECK');
+  assert.equal(checkQuestion.type, 'CHECK');
+
+  const updateConfigRes = await app.inject({
+    method: 'PUT', url: `/api/admin/checklist-questions/${question.id}`,
+    headers: auth, payload: { configuration: { photo_required: true } },
+  });
+  assert.equal(updateConfigRes.statusCode, 200);
+  const configuredQuestion = (updateConfigRes.json() as SuccessResponse<{ questionType: string; type: string; configuration: unknown; config: unknown }>).data;
+  assert.equal(configuredQuestion.questionType, 'CHECK');
+  assert.equal(configuredQuestion.type, 'CHECK');
+  assert.deepEqual(configuredQuestion.configuration, { photo_required: true });
+  assert.deepEqual(configuredQuestion.config, { photo_required: true });
 });
 
 /* =================================================================== */
@@ -667,6 +714,7 @@ test('phase 4 unauthenticated requests to checklist endpoints are rejected', asy
 
   const endpoints = [
     { method: 'GET' as const, url: '/api/checklists' },
+    { method: 'GET' as const, url: '/api/checklist-folders' },
     { method: 'GET' as const, url: `/api/checklists/${CHECKLIST_ALPHA_ID}` },
     { method: 'GET' as const, url: '/api/admin/checklists' },
     { method: 'POST' as const, url: '/api/admin/checklists' },

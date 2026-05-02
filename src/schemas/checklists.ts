@@ -3,10 +3,10 @@ import {
   actionPlanPriorityValues,
   actionPlanStatusValues,
   checklistAccessTypeValues,
-  checklistQuestionTypeValues,
   checklistStatusValues,
   submissionStatusValues,
 } from '../modules/checklists/contracts/checklists.types.js';
+import { restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 /* ---- Shared param schemas ---- */
 export const checklistIdParamsSchema = z.object({ id: z.string().uuid() });
@@ -19,9 +19,10 @@ export const answerParamsSchema = z.object({ id: z.string().uuid(), questionId: 
 
 const nullableStringSchema = z.string().trim().nullable().optional();
 const idArraySchema = z.array(z.string().uuid()).default([]);
+const persistedChecklistQuestionTypeValues = ['COMPLIANCE', 'DATE', 'TIME', 'NUMBER', 'TEXT', 'RATING', 'CHECK'] as const;
 
 /* ---- Checklist CRUD ---- */
-export const createChecklistBodySchema = z.object({
+const checklistBodySchema = z.object({
   title: z.string().trim().min(2),
   description: z.string().trim().optional().default(''),
   coverImage: nullableStringSchema,
@@ -30,10 +31,19 @@ export const createChecklistBodySchema = z.object({
   allowedUserIds: idArraySchema,
   allowedRegionIds: idArraySchema,
   allowedStoreIds: idArraySchema,
+  excludedUserIds: idArraySchema,
   folderId: z.string().uuid().nullable().optional(),
 });
 
-export const updateChecklistBodySchema = createChecklistBodySchema.partial();
+export const createChecklistBodySchema = checklistBodySchema.refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
+
+export const updateChecklistBodySchema = checklistBodySchema.partial().refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
 
 /* ---- Folder CRUD ---- */
 export const createFolderBodySchema = z.object({
@@ -52,15 +62,21 @@ export const createSectionBodySchema = z.object({
 export const updateSectionBodySchema = createSectionBodySchema.partial();
 
 /* ---- Question CRUD ---- */
-export const createQuestionBodySchema = z.object({
+const questionBodySchema = z.object({
   questionText: z.string().trim().min(1),
-  questionType: z.enum(checklistQuestionTypeValues).default('YES_NO'),
-  required: z.boolean().default(false),
+  questionType: z.enum(persistedChecklistQuestionTypeValues),
+  required: z.boolean(),
   configuration: z.unknown().nullable().optional(),
-  orderIndex: z.number().int().min(0).default(0),
+  orderIndex: z.number().int().min(0),
 });
 
-export const updateQuestionBodySchema = createQuestionBodySchema.partial();
+export const createQuestionBodySchema = questionBodySchema.extend({
+  questionType: questionBodySchema.shape.questionType.default('COMPLIANCE'),
+  required: questionBodySchema.shape.required.default(false),
+  orderIndex: questionBodySchema.shape.orderIndex.default(0),
+});
+
+export const updateQuestionBodySchema = questionBodySchema.partial();
 
 /* ---- Reorder ---- */
 export const reorderBodySchema = z.object({
@@ -68,6 +84,7 @@ export const reorderBodySchema = z.object({
     z.object({
       id: z.string().uuid(),
       orderIndex: z.number().int().min(0),
+      sectionId: z.string().uuid().nullable().optional(),
     }),
   ).min(1),
 });

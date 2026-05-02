@@ -135,6 +135,20 @@ export class InMemoryLmsRepository implements LmsRepository {
     );
   }
 
+  public async findEnrollmentIncludingDeleted(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null> {
+    return (
+      this.store
+        .listCourseEnrollments()
+        .filter(
+          (enrollment) =>
+            enrollment.companyId === companyId &&
+            enrollment.courseId === courseId &&
+            enrollment.userId === userId,
+        )
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null
+    );
+  }
+
   public async findEnrollmentById(companyId: string, enrollmentId: string): Promise<CourseEnrollmentRecord | null> {
     const enrollment = this.store.getCourseEnrollment(enrollmentId);
     return enrollment && enrollment.companyId === companyId && isActive(enrollment) ? enrollment : null;

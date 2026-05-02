@@ -136,6 +136,7 @@ Observacoes:
 | POST | `/api/admin/structure/top-levels` | Cria nivel superior | Admin |
 | PUT | `/api/admin/structure/top-levels/:id` | Atualiza nivel superior | Admin |
 | DELETE | `/api/admin/structure/top-levels/:id` | Soft delete de nivel superior | Admin |
+| POST | `/api/admin/structure/transitions/insert-parent-level` | Insere novo nivel pai e remapeia a hierarquia existente em transicao atomica | Admin |
 | POST | `/api/admin/structure/units` | Cria unidade | Admin |
 | PUT | `/api/admin/structure/units/:id` | Atualiza unidade | Admin |
 | DELETE | `/api/admin/structure/units/:id` | Soft delete de unidade | Admin |

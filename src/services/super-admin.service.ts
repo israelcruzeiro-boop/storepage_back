@@ -1,24 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
 import { normalizeEmail, normalizeSlug } from '../lib/normalization.js';
+import { TEMPORARY_INITIAL_PASSWORD } from '../lib/password-policy.js';
 import { toInviteView, toUserView } from '../lib/dto-mappers.js';
 import type { AuthenticatedActor, UserRole } from '../modules/auth/contracts/auth.types.js';
 import type { CompanyAuthenticatedView, CompanyRecord } from '../modules/company/contracts/company.types.js';
-import type { UserStatus } from '../modules/user/contracts/user.types.js';
+import type { UserRecord, UserStatus } from '../modules/user/contracts/user.types.js';
 import type { AuthSessionRepository } from '../repositories/contracts/auth-session.repository.js';
 import type { CompanyRepository } from '../repositories/contracts/company.repository.js';
 import type { InviteRepository } from '../repositories/contracts/invite.repository.js';
-import type {
-  LegacyRpcRepository,
-  ProvisionInviteResult,
-} from '../repositories/contracts/legacy-rpc.repository.js';
 import type { UserRepository } from '../repositories/contracts/user.repository.js';
+import type { PasswordService } from '../lib/passwords.js';
 
 export interface ProvisionAdminCommand {
   companyId: string;
   name: string;
   email: string;
   role?: UserRole;
+}
+
+export type ProvisionAdminStatus = 'created_user' | 'updated_existing';
+
+export interface ProvisionAdminResult {
+  status: ProvisionAdminStatus;
+  inviteId: string | null;
+  userId: string | null;
 }
 
 export interface SuperAdminListFilters {
@@ -40,6 +46,7 @@ interface CompanyInput {
   landingPageActive?: boolean;
   landingPageLayout?: string | null;
   checklistsEnabled?: boolean;
+  surveysEnabled?: boolean;
 }
 
 interface UserInput {
@@ -65,7 +72,7 @@ export class SuperAdminService {
     private readonly userRepository: UserRepository,
     private readonly inviteRepository: InviteRepository,
     private readonly authSessionRepository: AuthSessionRepository,
-    private readonly legacyRpc: LegacyRpcRepository,
+    private readonly passwordService: PasswordService,
   ) {}
 
   public async listCompanies(actor: AuthenticatedActor, includeDeleted = false): Promise<CompanyAuthenticatedView[]> {
@@ -108,6 +115,7 @@ export class SuperAdminService {
       features: {
         ...baseCompany.features,
         checklists: input.checklistsEnabled ?? baseCompany.features.checklists,
+        surveys: input.surveysEnabled ?? baseCompany.features.surveys,
       },
       deletedAt: null,
       createdAt: existing?.createdAt ?? now,
@@ -142,6 +150,7 @@ export class SuperAdminService {
       features: {
         ...current.features,
         checklists: input.checklistsEnabled ?? current.features.checklists,
+        surveys: input.surveysEnabled ?? current.features.surveys,
       },
       deletedAt: null,
       updatedAt: new Date().toISOString(),
@@ -260,12 +269,15 @@ export class SuperAdminService {
   public async provisionAdmin(
     actor: AuthenticatedActor,
     command: ProvisionAdminCommand,
-  ): Promise<ProvisionInviteResult> {
+  ): Promise<ProvisionAdminResult> {
     this.assertSuperAdmin(actor);
 
     const company = await this.companyRepository.findById(command.companyId);
     if (!company) {
       throw new AppError(404, 'NOT_FOUND', 'Company not found for the provided id.');
+    }
+    if (!company.active || company.status !== 'ACTIVE') {
+      throw new AppError(409, 'CONFLICT', 'Only active companies can receive new administrators.');
     }
 
     const role: UserRole = command.role ?? 'ADMIN';
@@ -273,11 +285,95 @@ export class SuperAdminService {
       throw new AppError(400, 'BAD_REQUEST', 'Cannot provision a super admin through this endpoint.');
     }
 
-    return this.legacyRpc.provisionInvite({
-      email: normalizeEmail(command.email),
-      name: command.name.trim(),
-      role,
+    const normalizedEmail = normalizeEmail(command.email);
+    const name = command.name.trim();
+    const now = new Date().toISOString();
+    const existingUser = await this.userRepository.findAnyByEmail(normalizedEmail);
+
+    if (existingUser) {
+      if (existingUser.role === 'SUPER_ADMIN') {
+        throw new AppError(409, 'CONFLICT', 'Super admin accounts cannot be provisioned as tenant administrators.');
+      }
+
+      const updatedUser = await this.userRepository.save({
+        ...existingUser,
+        companyId: company.id,
+        name,
+        email: normalizedEmail,
+        normalizedEmail,
+        role,
+        status: 'ACTIVE',
+        active: true,
+        deletedAt: null,
+        updatedAt: now,
+      });
+
+      if (
+        existingUser.companyId !== updatedUser.companyId ||
+        existingUser.role !== updatedUser.role ||
+        existingUser.status !== updatedUser.status ||
+        existingUser.active !== updatedUser.active
+      ) {
+        await this.authSessionRepository.revokeSessionsByUser(
+          existingUser.companyId,
+          existingUser.id,
+          now,
+          'super_admin_user_provisioned',
+        );
+      }
+
+      return {
+        status: 'updated_existing',
+        inviteId: null,
+        userId: updatedUser.id,
+      };
+    }
+
+    await this.cancelPendingInvite(company.id, normalizedEmail, now);
+
+    const user: UserRecord = {
+      id: randomUUID(),
       companyId: company.id,
+      name,
+      email: normalizedEmail,
+      normalizedEmail,
+      cpf: null,
+      role,
+      status: 'ACTIVE',
+      active: true,
+      firstAccess: true,
+      onboardingCompleted: false,
+      avatarUrl: null,
+      orgUnitId: null,
+      passwordHash: await this.passwordService.hashPassword(TEMPORARY_INITIAL_PASSWORD),
+      passwordUpdatedAt: null,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const savedUser = await this.userRepository.save(user);
+
+    return {
+      status: 'created_user',
+      inviteId: null,
+      userId: savedUser.id,
+    };
+  }
+
+  private async cancelPendingInvite(companyId: string, normalizedEmail: string, cancelledAt: string): Promise<void> {
+    const pendingInvite = await this.inviteRepository.findPendingByEmail(companyId, normalizedEmail);
+
+    if (!pendingInvite) {
+      return;
+    }
+
+    await this.inviteRepository.save({
+      ...pendingInvite,
+      status: 'CANCELLED',
+      cancelledAt,
+      deletedAt: cancelledAt,
+      updatedAt: cancelledAt,
     });
   }
 

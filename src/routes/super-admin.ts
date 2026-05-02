@@ -16,10 +16,9 @@ import { userIdParamsSchema } from '../schemas/users.js';
 /**
  * `POST /api/super-admin/companies/:id/provision-admin`
  *
- * Replaces the legacy `supabase.rpc('provision_invite')` call used by the
- * super-admin Dashboard to invite a tenant administrator. The route enforces
- * SUPER_ADMIN role; the service double-checks tenant existence and normalizes
- * the input before delegating to the database function.
+ * Invites or updates a tenant administrator without exposing invite tokens.
+ * The route enforces SUPER_ADMIN role; the service double-checks tenant
+ * existence and handles users, pending invites and delivery audit records.
  */
 export const superAdminRoutes: FastifyPluginAsync = async (app) => {
   app.get('/super-admin/companies', async (request, reply) => {

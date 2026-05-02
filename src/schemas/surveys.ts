@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { entityIdSchema } from './shared.js';
+import { entityIdSchema, restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 export const surveyIdParamsSchema = z.object({
   id: entityIdSchema,
@@ -136,8 +136,14 @@ const surveyBodyShape = {
   coverImage: z.string().nullable().optional(),
 };
 
-export const createSurveyBodySchema = z.object(surveyBodyShape).strict();
-export const updateSurveyBodySchema = z.object(surveyBodyShape).partial().strict();
+export const createSurveyBodySchema = z.object(surveyBodyShape).strict().refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
+export const updateSurveyBodySchema = z.object(surveyBodyShape).partial().strict().refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
 
 const surveyQuestionBodyShape = {
   surveyId: entityIdSchema.optional(),

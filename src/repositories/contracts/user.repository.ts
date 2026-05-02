@@ -22,6 +22,7 @@ export interface UserListResult {
 export interface UserRepository {
   findById(companyId: string, userId: string): Promise<UserRecord | null>;
   findAnyById(userId: string): Promise<UserRecord | null>;
+  findAnyByEmail(normalizedEmail: string): Promise<UserRecord | null>;
   findByEmail(companyId: string, normalizedEmail: string): Promise<UserRecord | null>;
   findByCpf(companyId: string, cpfDigits: string): Promise<UserRecord | null>;
   findByIdentifier(lookup: UserIdentifierLookup): Promise<UserRecord | null>;

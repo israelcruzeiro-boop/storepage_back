@@ -28,6 +28,11 @@ interface WriteOptions {
   onConflict?: string;
 }
 
+interface UpdateOptions {
+  select?: string;
+  filters?: readonly Filter[];
+}
+
 export interface SelectResult<Row> {
   rows: Row[];
   total: number | null;
@@ -101,6 +106,33 @@ export class SupabaseRestClient {
     const json = await this.readJson(response);
     if (!Array.isArray(json) || !json[0] || typeof json[0] !== 'object') {
       throw new SupabaseRestError(`Supabase table ${table} returned an invalid write response.`, response.status, json);
+    }
+
+    return json[0] as Row;
+  }
+
+  public async update<Row extends object>(
+    table: string,
+    payload: Record<string, unknown>,
+    options: UpdateOptions = {},
+  ): Promise<Row> {
+    const query = new URLSearchParams();
+    if (options.select) query.set('select', options.select);
+    options.filters?.forEach((filter) => {
+      query.append(filter.column, this.encodeFilter(filter));
+    });
+
+    const response = await this.request('PATCH', table, {
+      query,
+      body: payload,
+      headers: {
+        Prefer: 'return=representation',
+      },
+    });
+
+    const json = await this.readJson(response);
+    if (!Array.isArray(json) || !json[0] || typeof json[0] !== 'object') {
+      throw new SupabaseRestError(`Supabase table ${table} returned an invalid update response.`, response.status, json);
     }
 
     return json[0] as Row;

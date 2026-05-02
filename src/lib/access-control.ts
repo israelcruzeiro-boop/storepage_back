@@ -3,8 +3,25 @@ import { AppError } from './errors.js';
 import { adminRoleValues, type AuthenticatedAuthContext, type UserRole } from '../modules/auth/contracts/auth.types.js';
 import type { ResolvedTenantContext } from '../modules/tenant/contracts/tenant.types.js';
 
-export function requireAuthenticatedRequest(request: FastifyRequest): AuthenticatedAuthContext {
-  return request.requireAuth();
+interface RequireAuthenticatedOptions {
+  allowFirstAccess?: boolean;
+}
+
+export function requireAuthenticatedRequest(
+  request: FastifyRequest,
+  options: RequireAuthenticatedOptions = {},
+): AuthenticatedAuthContext {
+  const auth = request.requireAuth();
+
+  if (auth.actor.firstAccess && !options.allowFirstAccess) {
+    throw new AppError(
+      409,
+      'PASSWORD_CHANGE_REQUIRED',
+      'Password change is required before accessing this resource.',
+    );
+  }
+
+  return auth;
 }
 
 export function requireTenantContext(request: FastifyRequest): ResolvedTenantContext {
@@ -12,7 +29,7 @@ export function requireTenantContext(request: FastifyRequest): ResolvedTenantCon
 }
 
 export function requireRole(request: FastifyRequest, allowedRoles: readonly UserRole[]): AuthenticatedAuthContext {
-  const auth = request.requireAuth();
+  const auth = requireAuthenticatedRequest(request);
 
   if (!allowedRoles.includes(auth.actor.role)) {
     throw new AppError(403, 'FORBIDDEN', 'You do not have permission to access this resource.');

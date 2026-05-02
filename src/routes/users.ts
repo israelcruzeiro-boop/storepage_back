@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { requireAuthenticatedRequest } from '../lib/access-control.js';
-import { selfProfileUpdateBodySchema } from '../schemas/users.js';
+import { selfProfileUpdateBodySchema, visibleUsersQuerySchema } from '../schemas/users.js';
 
 export const usersRoutes: FastifyPluginAsync = async (app) => {
   app.patch('/users/me/profile', async (request, reply) => {
@@ -10,6 +10,16 @@ export const usersRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.success(data, {
       message: 'Own profile updated successfully.',
+    });
+  });
+
+  app.get('/users/me/visible-users', async (request, reply) => {
+    const auth = requireAuthenticatedRequest(request);
+    const query = visibleUsersQuerySchema.parse(request.query);
+    const data = await app.services.userDirectory.listVisibleUsers(auth.actor, query);
+
+    return reply.success(data, {
+      message: 'Visible users loaded successfully.',
     });
   });
 };

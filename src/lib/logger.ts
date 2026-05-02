@@ -2,7 +2,7 @@ import type { FastifyServerOptions } from 'fastify';
 import type { AppEnv } from '../config/env.js';
 
 const REDACTED = '[REDACTED]';
-const SENSITIVE_QUERY_KEYS = new Set(['token', 'activationToken', 'inviteToken']);
+const SENSITIVE_QUERY_KEYS = new Set(['token', 'activationToken', 'inviteToken', 'activationUrl']);
 
 function redactSensitiveUrl(rawUrl: string): string {
   const redactedPath = rawUrl.replace(
@@ -43,6 +43,8 @@ export function buildLoggerConfig(env: AppEnv): FastifyServerOptions['logger'] {
         'req.query.token',
         'req.query.activationToken',
         'req.query.inviteToken',
+        'req.query.activationUrl',
+        'req.body.activationUrl',
         'req.body.refreshToken',
         'res.headers["set-cookie"]',
         'response.headers["set-cookie"]',

@@ -38,6 +38,8 @@ export const updateAppearanceBodySchema = z
     faviconUrl: nullableUrlSchema.optional(),
     theme: themePatchSchema.optional(),
     hero: heroPatchSchema.optional(),
+    landingPageActive: z.boolean().optional(),
+    landingPageLayout: z.enum(['classic', 'gradient', 'immersive', 'solid', 'glass', 'split']).nullable().optional(),
   })
   .refine((value) => Object.values(value).some((entry) => entry !== undefined), {
     message: 'At least one appearance field must be provided.',
@@ -60,7 +62,7 @@ export const updateGeneralBodySchema = z
     name: personNameSchema.max(160).optional(),
     status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
     active: z.boolean().optional(),
-    orgLevels: z.array(z.string().trim().min(2).max(60)).min(1).max(8).optional(),
+    orgLevels: z.array(z.string().trim().min(2).max(60)).min(0).max(8).optional(),
     orgUnitName: z.string().trim().min(2).max(60).optional(),
     supportEmail: emailSchema.nullable().optional(),
   })

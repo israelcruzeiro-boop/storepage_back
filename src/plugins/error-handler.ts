@@ -5,7 +5,7 @@ import { buildErrorResponse } from '../lib/http.js';
 function redactSensitiveUrl(rawUrl: string): string {
   try {
     const url = new URL(rawUrl, 'http://storepage.local');
-    for (const key of ['token', 'activationToken', 'inviteToken']) {
+    for (const key of ['token', 'activationToken', 'inviteToken', 'activationUrl']) {
       if (url.searchParams.has(key)) {
         url.searchParams.set(key, '[REDACTED]');
       }

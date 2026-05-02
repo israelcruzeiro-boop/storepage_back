@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
+import type { RestrictedAccessEvaluator } from '../lib/restricted-access.js';
 import { sanitizeHtml } from '../lib/sanitize-html.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type {
@@ -30,6 +31,7 @@ interface CourseInput {
   targetAudience: string[];
   passingScore: number;
   diplomaTemplate: string;
+  layoutTemplate: CourseRecord['layoutTemplate'];
 }
 type CourseUpdateInput = Partial<CourseInput>;
 type ModuleInput = Pick<CourseModuleRecord, 'title' | 'orderIndex'>;
@@ -63,14 +65,17 @@ interface QuestionInput {
 type QuestionUpdateInput = Partial<QuestionInput>;
 
 export class LmsService {
-  public constructor(private readonly repository: LmsRepository) {}
+  public constructor(
+    private readonly repository: LmsRepository,
+    private readonly access: RestrictedAccessEvaluator,
+  ) {}
 
   public async listCourses(actor: AuthenticatedActor) {
     const courses = await this.repository.listCourses(actor.companyId);
     const modules = await Promise.all(courses.map((course) => this.repository.listModules(course.id)));
-    return courses
-      .filter((course) => this.canReadCourse(actor, course))
-      .map((course, index) => this.toCourseView(course, modules[index]?.length ?? 0));
+    const moduleCountByCourseId = new Map(courses.map((course, index) => [course.id, modules[index]?.length ?? 0]));
+    const readableCourses = await this.access.filterReadable(actor, courses);
+    return readableCourses.map((course) => this.toCourseView(course, moduleCountByCourseId.get(course.id) ?? 0));
   }
 
   public async getCourse(actor: AuthenticatedActor, courseId: string) {
@@ -92,6 +97,7 @@ export class LmsService {
       createdAt: now,
       updatedAt: now,
     };
+    await this.access.assertValidAccessTarget(companyId, course);
     return this.toCourseView(await this.repository.saveCourse(course));
   }
 
@@ -105,6 +111,7 @@ export class LmsService {
       imageUrl: input.imageUrl === undefined ? course.imageUrl : input.imageUrl ?? input.thumbnailUrl ?? null,
       updatedAt: new Date().toISOString(),
     };
+    await this.access.assertValidAccessTarget(companyId, next);
     return this.toCourseView(await this.repository.saveCourse(next));
   }
 
@@ -278,6 +285,11 @@ export class LmsService {
     if (existing) return this.toEnrollmentView(existing);
 
     const now = new Date().toISOString();
+    const deletedEnrollment = await this.repository.findEnrollmentIncludingDeleted(actor.companyId, courseId, actor.userId);
+    if (deletedEnrollment) {
+      return this.toEnrollmentView(await this.repository.saveEnrollment(this.reopenEnrollment(deletedEnrollment, now)));
+    }
+
     const enrollment: CourseEnrollmentRecord = {
       id: randomUUID(),
       courseId,
@@ -301,6 +313,7 @@ export class LmsService {
 
   public async updateProgress(actor: AuthenticatedActor, enrollmentId: string, input: { moduleId?: string | null; contentId?: string | null }) {
     const enrollment = await this.getOwnedEnrollment(actor, enrollmentId);
+    if (enrollment.status === 'COMPLETED') return this.toEnrollmentView(enrollment);
     if (input.moduleId) await this.getTenantModule(actor.companyId, input.moduleId);
     if (input.contentId) await this.getTenantContent(actor.companyId, input.contentId);
 
@@ -321,18 +334,33 @@ export class LmsService {
   public async submitAnswer(
     actor: AuthenticatedActor,
     enrollmentId: string,
-    input: { questionId: string; selectedOptionId?: string | null; complexAnswer?: unknown | null; isCorrect: boolean },
+    input: { questionId: string; selectedOptionId?: string | null; complexAnswer?: unknown | null; isCorrect: boolean; finalize?: boolean },
   ) {
-    await this.getOwnedEnrollment(actor, enrollmentId);
-    await this.getTenantQuestion(actor.companyId, input.questionId);
+    const enrollment = await this.getOwnedEnrollment(actor, enrollmentId);
+    const question = await this.getTenantQuestion(actor.companyId, input.questionId);
+    const module = await this.getTenantModule(actor.companyId, question.moduleId);
+    if (module.courseId !== enrollment.courseId) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'The question does not belong to this course enrollment.');
+    }
+    if (input.selectedOptionId) {
+      const options = await this.repository.listQuestionOptions([question.id]);
+      if (!options.some((option) => option.id === input.selectedOptionId)) {
+        throw new AppError(400, 'VALIDATION_ERROR', 'The selected option does not belong to this question.');
+      }
+    }
     const now = new Date().toISOString();
     const existing = await this.repository.findAnswer(enrollmentId, input.questionId);
+    if (existing?.completedAnswerId) return this.toAnswerView(existing);
+    if (enrollment.status === 'COMPLETED') {
+      throw new AppError(409, 'CONFLICT', 'Completed courses cannot receive new answers.');
+    }
+    const answerId = existing?.id ?? randomUUID();
     const answer: CourseAnswerRecord = {
-      id: existing?.id ?? randomUUID(),
+      id: answerId,
       enrollmentId,
       questionId: input.questionId,
       selectedOptionId: input.selectedOptionId ?? null,
-      completedAnswerId: existing?.completedAnswerId ?? null,
+      completedAnswerId: input.finalize ? answerId : null,
       complexAnswer: input.complexAnswer ?? null,
       isCorrect: input.isCorrect,
       answeredAt: now,
@@ -346,17 +374,30 @@ export class LmsService {
     input: { totalCorrect: number; totalQuestions: number; startedAt?: string },
   ) {
     const enrollment = await this.getOwnedEnrollment(actor, enrollmentId);
+    if (enrollment.status === 'COMPLETED') return this.toEnrollmentView(enrollment);
     const completedAt = new Date().toISOString();
-    const startedAt = input.startedAt ?? enrollment.startedAt;
+    const providedStartedAt = input.startedAt ? new Date(input.startedAt) : null;
+    const startedAt = providedStartedAt && !Number.isNaN(providedStartedAt.getTime()) ? providedStartedAt.toISOString() : enrollment.startedAt;
+    const modules = await this.repository.listModules(enrollment.courseId);
+    const questions = await this.repository.listQuestions(actor.companyId, { moduleIds: modules.map((module) => module.id) });
+    const answers = await this.repository.listAnswers(enrollment.id);
+    const finalAnswersByQuestionId = new Map(answers.filter((answer) => answer.completedAnswerId).map((answer) => [answer.questionId, answer]));
+    if (questions.length > 0 && questions.some((question) => !finalAnswersByQuestionId.has(question.id))) {
+      throw new AppError(400, 'VALIDATION_ERROR', 'All course questions must be answered before completion.');
+    }
+    const totalQuestions = questions.length > 0 ? questions.length : input.totalQuestions;
+    const totalCorrect = questions.length > 0
+      ? questions.filter((question) => finalAnswersByQuestionId.get(question.id)?.isCorrect).length
+      : input.totalCorrect;
     const elapsed = Math.max(0, Math.floor((new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000));
-    const score = input.totalQuestions > 0 ? Math.round((input.totalCorrect / input.totalQuestions) * 100) : 100;
+    const score = totalQuestions > 0 ? Math.round((totalCorrect / totalQuestions) * 100) : 100;
     const next: CourseEnrollmentRecord = {
       ...enrollment,
       status: 'COMPLETED',
       completedAt,
       scorePercent: score,
-      totalCorrect: input.totalCorrect,
-      totalQuestions: input.totalQuestions,
+      totalCorrect,
+      totalQuestions,
       timeSpentSeconds: elapsed,
       updatedAt: completedAt,
     };
@@ -549,7 +590,7 @@ export class LmsService {
 
   private async getReadableCourse(actor: AuthenticatedActor, courseId: string) {
     const course = await this.getTenantCourse(actor.companyId, courseId);
-    if (!this.canReadCourse(actor, course)) {
+    if (!(await this.access.canRead(actor, course))) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have permission to access this course.');
     }
     return course;
@@ -596,14 +637,6 @@ export class LmsService {
     return quiz.companyId === companyId || !quiz.contentId;
   }
 
-  private canReadCourse(actor: AuthenticatedActor, course: CourseRecord): boolean {
-    if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return true;
-    if (course.excludedUserIds.includes(actor.userId)) return false;
-    if (course.status !== 'ACTIVE') return false;
-    if (course.accessType === 'ALL') return true;
-    return course.allowedUserIds.length === 0 || course.allowedUserIds.includes(actor.userId);
-  }
-
   private buildCourseStats(enrollments: CourseEnrollmentRecord[]) {
     const completed = enrollments.filter((enrollment) => enrollment.status === 'COMPLETED');
     const completionRate = enrollments.length > 0 ? Math.round((completed.length / enrollments.length) * 100) : 0;
@@ -625,6 +658,23 @@ export class LmsService {
     };
   }
 
+  private reopenEnrollment(enrollment: CourseEnrollmentRecord, now: string): CourseEnrollmentRecord {
+    return {
+      ...enrollment,
+      status: 'IN_PROGRESS',
+      startedAt: now,
+      completedAt: null,
+      scorePercent: null,
+      totalCorrect: null,
+      totalQuestions: null,
+      timeSpentSeconds: null,
+      currentModuleId: null,
+      currentContentId: null,
+      deletedAt: null,
+      updatedAt: now,
+    };
+  }
+
   private toCourseView(course: CourseRecord, moduleCount = 0) {
     return {
       id: course.id,
@@ -643,6 +693,7 @@ export class LmsService {
       targetAudience: course.targetAudience,
       passingScore: course.passingScore,
       diplomaTemplate: course.diplomaTemplate,
+      layoutTemplate: course.layoutTemplate,
       moduleCount,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,

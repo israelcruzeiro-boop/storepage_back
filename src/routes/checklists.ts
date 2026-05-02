@@ -34,6 +34,12 @@ export const checklistsRoutes: FastifyPluginAsync = async (app) => {
     return reply.success(data, { message: 'Checklists loaded successfully.' });
   });
 
+  app.get('/checklist-folders', async (request, reply) => {
+    const auth = requireAuthenticatedRequest(request);
+    const data = await app.services.checklists.listReadableFolders(auth.actor);
+    return reply.success(data, { message: 'Checklist folders loaded successfully.' });
+  });
+
   app.get('/checklists/:id', async (request, reply) => {
     const auth = requireAuthenticatedRequest(request);
     const params = checklistIdParamsSchema.parse(request.params);

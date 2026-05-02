@@ -72,7 +72,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/auth/logout', async (request, reply) => {
-    const auth = requireAuthenticatedRequest(request);
+    const auth = requireAuthenticatedRequest(request, { allowFirstAccess: true });
     const data = await app.services.auth.logout(auth.actor);
     clearRefreshTokenCookie(reply, app.config);
 
@@ -82,7 +82,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get('/auth/me', async (request, reply) => {
-    const auth = requireAuthenticatedRequest(request);
+    const auth = requireAuthenticatedRequest(request, { allowFirstAccess: true });
     const data = await app.services.auth.getMe(auth.actor);
 
     return reply.success(data, {
@@ -147,7 +147,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.patch('/auth/password', async (request, reply) => {
-    const auth = requireAuthenticatedRequest(request);
+    const auth = requireAuthenticatedRequest(request, { allowFirstAccess: true });
     const body = passwordUpdateBodySchema.parse(request.body);
     const data = await app.services.auth.updatePassword(auth.actor, body);
 

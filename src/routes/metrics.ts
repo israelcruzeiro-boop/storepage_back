@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { requireAdminRole, requireAuthenticatedRequest } from '../lib/access-control.js';
 import {
+  contentMetricSummariesQuerySchema,
   recordRatingBodySchema,
   recordViewBodySchema,
   repositoryMetricsQuerySchema,
@@ -26,6 +27,16 @@ export const metricsRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.success(data, {
       message: 'Content rating recorded successfully.',
+    });
+  });
+
+  app.get('/metrics/content-summaries', async (request, reply) => {
+    const auth = requireAuthenticatedRequest(request);
+    const query = contentMetricSummariesQuerySchema.parse(request.query);
+    const data = await app.services.contentLibrary.listContentMetricSummaries(auth.actor, query);
+
+    return reply.success(data, {
+      message: 'Content metric summaries loaded successfully.',
     });
   });
 

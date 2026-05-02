@@ -3,6 +3,7 @@ import { requireAdminRole } from '../lib/access-control.js';
 import {
   createTopLevelBodySchema,
   createUnitBodySchema,
+  insertParentLevelTransitionBodySchema,
   structureEntityParamsSchema,
   updateTopLevelBodySchema,
   updateUnitBodySchema,
@@ -65,6 +66,16 @@ export const adminStructureRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.success(data, {
       message: 'Top-level node deleted successfully.',
+    });
+  });
+
+  app.post('/admin/structure/transitions/insert-parent-level', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const body = insertParentLevelTransitionBodySchema.parse(request.body);
+    const data = await app.services.company.insertParentLevel(auth.actor.companyId, body);
+
+    return reply.success(data, {
+      message: 'Parent hierarchy level inserted successfully.',
     });
   });
 

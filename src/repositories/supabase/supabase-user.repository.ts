@@ -30,6 +30,18 @@ export class SupabaseUserRepository implements UserRepository {
     return row ? toUserRecord(row) : null;
   }
 
+  public async findAnyByEmail(normalizedEmail: string): Promise<UserRecord | null> {
+    const row = await this.client.selectOne<UserRow>('users', {
+      select: USER_SELECT,
+      filters: [
+        { column: 'normalized_email', operator: 'eq', value: normalizeEmail(normalizedEmail) },
+        { column: 'deleted_at', operator: 'is', value: null },
+      ],
+    });
+
+    return row ? toUserRecord(row) : null;
+  }
+
   public async findByEmail(companyId: string, normalizedEmail: string): Promise<UserRecord | null> {
     const row = await this.client.selectOne<UserRow>('users', {
       select: USER_SELECT,

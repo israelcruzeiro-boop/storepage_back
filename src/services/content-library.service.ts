@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
+import type { RestrictedAccessEvaluator } from '../lib/restricted-access.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type {
   CategoryRecord,
+  ContentMetricSummary,
   ContentRecord,
   ContentViewRecord,
   RepositoryRecord,
@@ -59,11 +61,13 @@ export class ContentLibraryService {
   public constructor(
     private readonly companyRepository: CompanyRepository,
     private readonly contentRepository: ContentRepository,
+    private readonly access: RestrictedAccessEvaluator,
   ) {}
 
   public async listRepositories(actor: AuthenticatedActor) {
     const repositories = await this.contentRepository.listRepositories(actor.companyId);
-    return repositories.filter((repository) => this.canReadRepository(actor, repository)).map(this.toRepositoryView);
+    const readableRepositories = await this.access.filterReadable(actor, repositories);
+    return readableRepositories.map(this.toRepositoryView);
   }
 
   public async getRepository(actor: AuthenticatedActor, repositoryId: string) {
@@ -136,6 +140,7 @@ export class ContentLibraryService {
       updatedAt: now,
     };
 
+    await this.access.assertValidAccessTarget(companyId, repository);
     return this.toRepositoryView(await this.contentRepository.saveRepository(repository));
   }
 
@@ -147,6 +152,7 @@ export class ContentLibraryService {
       updatedAt: new Date().toISOString(),
     };
 
+    await this.access.assertValidAccessTarget(companyId, updatedRepository);
     return this.toRepositoryView(await this.contentRepository.saveRepository(updatedRepository));
   }
 
@@ -300,6 +306,9 @@ export class ContentLibraryService {
       name: company.name,
       slug: company.slug,
       branding: company.branding,
+      landingPageActive: company.landingPageActive,
+      landingPageEnabled: company.landingPageEnabled,
+      landingPageLayout: company.landingPageLayout,
     };
   }
 
@@ -381,6 +390,53 @@ export class ContentLibraryService {
     return this.buildRepositoryMetrics(repositoryId, contents, views, ratings);
   }
 
+  public async listContentMetricSummaries(actor: AuthenticatedActor, filters: { repositoryId?: string } = {}) {
+    const readableRepositories = filters.repositoryId
+      ? [await this.getReadableRepository(actor, filters.repositoryId)]
+      : await this.access.filterReadable(actor, await this.contentRepository.listRepositories(actor.companyId));
+
+    const readableRepositoryIds = new Set(
+      readableRepositories
+        .filter((repository) => repository.status === 'ACTIVE')
+        .map((repository) => repository.id),
+    );
+
+    if (readableRepositoryIds.size === 0) return [];
+
+    const [contents, simpleLinks, views, ratings] = await Promise.all([
+      this.contentRepository.listContents(actor.companyId, { repositoryId: filters.repositoryId }),
+      this.contentRepository.listSimpleLinks(actor.companyId, { repositoryId: filters.repositoryId }),
+      this.contentRepository.listContentViews(actor.companyId, { repositoryId: filters.repositoryId }),
+      this.contentRepository.listRatings(actor.companyId, { repositoryId: filters.repositoryId }),
+    ]);
+
+    const metricTargets = [
+      ...contents
+        .filter((content) => content.status === 'ACTIVE' && readableRepositoryIds.has(content.repositoryId))
+        .map((content) => ({ contentId: content.id, repositoryId: content.repositoryId })),
+      ...simpleLinks
+        .filter((simpleLink) => simpleLink.status === 'ACTIVE' && readableRepositoryIds.has(simpleLink.repositoryId))
+        .map((simpleLink) => ({ contentId: simpleLink.id, repositoryId: simpleLink.repositoryId })),
+    ];
+
+    return metricTargets.map(({ contentId, repositoryId }): ContentMetricSummary => {
+      const contentRatings = ratings.filter((rating) => rating.contentId === contentId);
+      const averageRating =
+        contentRatings.length === 0
+          ? null
+          : Number((contentRatings.reduce((total, rating) => total + rating.rating, 0) / contentRatings.length).toFixed(2));
+
+      return {
+        contentId,
+        repositoryId,
+        viewsCount: views.filter((view) => view.contentId === contentId).length,
+        ratingsCount: contentRatings.length,
+        averageRating,
+        currentUserRating: contentRatings.find((rating) => rating.userId === actor.userId)?.rating ?? null,
+      };
+    });
+  }
+
   public async getSummary(companyId: string) {
     const [views, ratings] = await Promise.all([
       this.contentRepository.listContentViews(companyId),
@@ -436,7 +492,7 @@ export class ContentLibraryService {
 
   private async getReadableRepository(actor: AuthenticatedActor, repositoryId: string) {
     const repository = await this.getTenantRepository(actor.companyId, repositoryId);
-    if (!this.canReadRepository(actor, repository)) {
+    if (!(await this.access.canRead(actor, repository))) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have permission to access this repository.');
     }
     return repository;
@@ -474,13 +530,6 @@ export class ContentLibraryService {
     }
 
     throw new AppError(404, 'NOT_FOUND', 'Content or simple link not found for the provided repository.');
-  }
-
-  private canReadRepository(actor: AuthenticatedActor, repository: RepositoryRecord): boolean {
-    if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return true;
-    if (repository.excludedUserIds.includes(actor.userId)) return false;
-    if (repository.accessType === 'ALL') return true;
-    return repository.allowedUserIds.length === 0 || repository.allowedUserIds.includes(actor.userId);
   }
 
   private buildRepositoryMetrics(

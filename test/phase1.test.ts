@@ -6,6 +6,7 @@ import { parseEnv, type AppEnv } from '../src/config/env.js';
 import { INVITE_ACTIVATION_COOKIE_NAME, REFRESH_TOKEN_COOKIE_NAME } from '../src/lib/auth-cookies.js';
 import { PasswordService } from '../src/lib/passwords.js';
 import { sanitizeHtml } from '../src/lib/sanitize-html.js';
+import type { InviteDeliveryProvider, InviteDeliverySendInput } from '../src/services/invite-delivery.service.js';
 
 const SHARED_SECRET = '0123456789abcdef0123456789abcdef';
 const COMPANY_ALPHA_ID = '11111111-1111-4111-8111-111111111111';
@@ -15,8 +16,10 @@ const ADMIN_BETA_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const USER_ALPHA_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const SUPER_ADMIN_ALPHA_ID = '12121212-1212-4121-8121-121212121212';
 const INVITE_ALPHA_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const INVITE_BETA_ID = 'dddddddd-dddd-4ddd-8ddd-eeeeeeeeeeee';
 const TOP_LEVEL_ALPHA_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const UNIT_ALPHA_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+const UNIT_ALPHA_OTHER_ID = '24242424-2424-4242-8242-242424242424';
 const UNIT_BETA_ID = '99999999-9999-4999-8999-999999999999';
 const SURVEY_ALPHA_ID = '34343434-3434-4343-8343-343434343434';
 const SURVEY_BETA_ID = '45454545-4545-4454-8454-454545454545';
@@ -88,8 +91,49 @@ function createJwtEnv(overrides: Partial<Record<string, string>> = {}): AppEnv {
     ACCESS_TOKEN_TTL_MINUTES: '15',
     REFRESH_TOKEN_TTL_DAYS: '14',
     PUBLIC_TENANT_CACHE_TTL_SECONDS: '60',
+    INVITE_DELIVERY_PROVIDER: 'noop',
+    INVITE_ACTIVATION_BASE_URL: 'http://localhost:8080/ativar-convite',
+    INVITE_DELIVERY_FROM: '',
+    SMTP_HOST: '',
+    SMTP_PORT: '587',
+    SMTP_USER: '',
+    SMTP_PASS: '',
+    SMTP_SECURE: 'false',
     ...overrides,
   });
+}
+
+function smtpInviteDeliveryEnv(overrides: Partial<Record<string, string>> = {}): Record<string, string> {
+  return {
+    INVITE_DELIVERY_PROVIDER: 'smtp',
+    INVITE_ACTIVATION_BASE_URL: 'https://app.storepage.com/ativar-convite',
+    INVITE_DELIVERY_FROM: 'StorePage <no-reply@storepage.com>',
+    SMTP_HOST: 'smtp.storepage.com',
+    SMTP_PORT: '587',
+    SMTP_USER: 'smtp-user',
+    SMTP_PASS: 'smtp-pass',
+    SMTP_SECURE: 'true',
+    ...overrides,
+  };
+}
+
+class CapturingInviteDeliveryProvider implements InviteDeliveryProvider {
+  public readonly name = 'smtp';
+  public readonly channel = 'email';
+  public readonly calls: InviteDeliverySendInput[] = [];
+
+  public async sendInviteActivation(input: InviteDeliverySendInput): Promise<void> {
+    this.calls.push(input);
+  }
+}
+
+class FailingInviteDeliveryProvider implements InviteDeliveryProvider {
+  public readonly name = 'smtp';
+  public readonly channel = 'email';
+
+  public async sendInviteActivation(): Promise<void> {
+    throw new Error('failed while sending activation URL and token');
+  }
 }
 
 async function createSeed() {
@@ -275,7 +319,7 @@ async function createSeed() {
         status: 'PENDING_SETUP' as const,
         invitedByUserId: ADMIN_ALPHA_ID,
         userId: null,
-        expiresAt: '2026-05-01T12:00:00.000Z',
+        expiresAt: '2026-06-01T12:00:00.000Z',
         activatedAt: null,
         cancelledAt: null,
         deletedAt: null,
@@ -301,6 +345,17 @@ async function createSeed() {
         companyId: COMPANY_ALPHA_ID,
         name: 'Loja Centro',
         code: 'ALPHA-01',
+        topLevelId: TOP_LEVEL_ALPHA_ID,
+        active: true,
+        deletedAt: null,
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: UNIT_ALPHA_OTHER_ID,
+        companyId: COMPANY_ALPHA_ID,
+        name: 'Loja Norte',
+        code: 'ALPHA-02',
         topLevelId: TOP_LEVEL_ALPHA_ID,
         active: true,
         deletedAt: null,
@@ -429,6 +484,7 @@ async function createSeed() {
         targetAudience: [],
         passingScore: 70,
         diplomaTemplate: 'azul',
+        layoutTemplate: 'focus',
         deletedAt: null,
         createdAt: now,
         updatedAt: now,
@@ -450,6 +506,7 @@ async function createSeed() {
         targetAudience: [],
         passingScore: 70,
         diplomaTemplate: 'azul',
+        layoutTemplate: 'focus',
         deletedAt: null,
         createdAt: now,
         updatedAt: now,
@@ -845,6 +902,110 @@ test('CORS credentials use explicit allowed origins and reject wildcard credenti
   );
 });
 
+test('production env requires cookie-compatible auth and explicit origins', () => {
+  assert.throws(
+    () =>
+      createJwtEnv({
+        NODE_ENV: 'production',
+        JWT_AUTH_MODE: 'disabled',
+        CORS_ORIGINS: 'https://app.storepage.com',
+        CORS_ALLOW_CREDENTIALS: 'true',
+      }),
+    /JWT_AUTH_MODE must be shared-secret or jwks in production/,
+  );
+
+  assert.throws(
+    () =>
+      createJwtEnv({
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.storepage.com',
+        CORS_ALLOW_CREDENTIALS: 'false',
+      }),
+    /CORS_ALLOW_CREDENTIALS must be true in production for HttpOnly cookie auth/,
+  );
+
+  assert.throws(
+    () =>
+      createJwtEnv({
+        NODE_ENV: 'production',
+        CORS_ORIGINS: '*',
+        CORS_ALLOW_CREDENTIALS: 'true',
+      }),
+    /CORS_ORIGINS must list explicit frontend origins in production/,
+  );
+
+  const sharedSecretEnv = createJwtEnv({
+    ...smtpInviteDeliveryEnv(),
+    NODE_ENV: 'production',
+    CORS_ORIGINS: 'https://app.storepage.com',
+    CORS_ALLOW_CREDENTIALS: 'true',
+    JWT_AUTH_MODE: 'shared-secret',
+    JWT_SHARED_SECRET: SHARED_SECRET,
+    JWT_JWKS_URL: '',
+  });
+  assert.equal(sharedSecretEnv.AUTH.mode, 'shared-secret');
+  assert.equal(sharedSecretEnv.CORS_ALLOW_CREDENTIALS, true);
+  assert.deepEqual(sharedSecretEnv.CORS_ORIGINS, ['https://app.storepage.com']);
+
+  const jwksEnv = createJwtEnv({
+    ...smtpInviteDeliveryEnv(),
+    NODE_ENV: 'production',
+    CORS_ORIGINS: 'https://app.storepage.com',
+    CORS_ALLOW_CREDENTIALS: 'true',
+    JWT_AUTH_MODE: 'jwks',
+    JWT_ALLOWED_ALGORITHMS: 'RS256',
+    JWT_SHARED_SECRET: '',
+    JWT_JWKS_URL: 'https://auth.storepage.com/.well-known/jwks.json',
+  });
+  assert.equal(jwksEnv.AUTH.mode, 'jwks');
+  assert.equal(jwksEnv.AUTH.jwksUrl, 'https://auth.storepage.com/.well-known/jwks.json');
+});
+
+test('production env requires secure invite delivery configuration', () => {
+  assert.throws(
+    () =>
+      createJwtEnv({
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.storepage.com',
+        CORS_ALLOW_CREDENTIALS: 'true',
+        INVITE_DELIVERY_PROVIDER: 'noop',
+        INVITE_ACTIVATION_BASE_URL: 'https://app.storepage.com/ativar-convite',
+      }),
+    /INVITE_DELIVERY_PROVIDER cannot be noop in production/,
+  );
+
+  assert.throws(
+    () =>
+      createJwtEnv({
+        ...smtpInviteDeliveryEnv({ INVITE_ACTIVATION_BASE_URL: 'http://app.storepage.com/ativar-convite' }),
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.storepage.com',
+        CORS_ALLOW_CREDENTIALS: 'true',
+      }),
+    /INVITE_ACTIVATION_BASE_URL must be HTTPS in production/,
+  );
+
+  assert.throws(
+    () =>
+      createJwtEnv({
+        ...smtpInviteDeliveryEnv({ SMTP_PASS: '' }),
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://app.storepage.com',
+        CORS_ALLOW_CREDENTIALS: 'true',
+      }),
+    /SMTP_PASS is required when INVITE_DELIVERY_PROVIDER=smtp/,
+  );
+
+  const env = createJwtEnv({
+    ...smtpInviteDeliveryEnv(),
+    NODE_ENV: 'production',
+    CORS_ORIGINS: 'https://app.storepage.com',
+    CORS_ALLOW_CREDENTIALS: 'true',
+  });
+  assert.equal(env.INVITE_DELIVERY.provider, 'smtp');
+  assert.equal(env.INVITE_DELIVERY.activationBaseUrl, 'https://app.storepage.com/ativar-convite');
+});
+
 test('login requires tenant for regular users but allows global super admin login', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {
@@ -1018,6 +1179,137 @@ test('refresh rotates refresh tokens and invalidates the previous one', async (t
   assert.equal(staleRefreshResponse.statusCode, 401);
   const staleRefreshPayload = staleRefreshResponse.json() as ErrorResponse;
   assert.equal(staleRefreshPayload.code, 'INVALID_REFRESH_TOKEN');
+});
+
+test('first-access users can login with the temporary password but cannot access protected data before changing it', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const adminLogin = await loginAsAdminAlpha(app);
+  const createResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/users/invite',
+    headers: {
+      authorization: `Bearer ${adminLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Primeiro Acesso',
+      email: 'primeiro.acesso@storepage.com',
+      cpf: '55555555558',
+      role: 'USER',
+      orgUnitId: UNIT_ALPHA_ID,
+    },
+  });
+  assert.equal(createResponse.statusCode, 201);
+
+  const loginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'primeiro.acesso@storepage.com',
+      password: '123456',
+      company_slug: 'alpha-store',
+    },
+  });
+  assert.equal(loginResponse.statusCode, 200);
+  assert.equal(loginResponse.body.includes('123456'), false);
+  assert.equal(loginResponse.body.includes('scrypt$'), false);
+  const loginPayload = loginResponse.json() as SuccessResponse<{
+    accessToken: string;
+    user: { id: string; firstAccess: boolean };
+  }>;
+  assert.equal(loginPayload.data.user.firstAccess, true);
+
+  const firstAccessHeaders = { authorization: `Bearer ${loginPayload.data.accessToken}` };
+  const meResponse = await app.inject({
+    method: 'GET',
+    url: '/api/auth/me',
+    headers: firstAccessHeaders,
+  });
+  assert.equal(meResponse.statusCode, 200);
+
+  const repositoriesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/repositories',
+    headers: firstAccessHeaders,
+  });
+  assert.equal(repositoriesResponse.statusCode, 409);
+  const repositoriesPayload = repositoriesResponse.json() as ErrorResponse;
+  assert.equal(repositoriesPayload.code, 'PASSWORD_CHANGE_REQUIRED');
+
+  const refreshResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/refresh',
+    headers: {
+      cookie: readRefreshCookiePair(loginResponse.headers as Record<string, unknown>),
+    },
+  });
+  assert.equal(refreshResponse.statusCode, 200);
+  const refreshPayload = refreshResponse.json() as SuccessResponse<{ user: { firstAccess: boolean } }>;
+  assert.equal(refreshPayload.data.user.firstAccess, true);
+
+  const temporaryAsNewPasswordResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/auth/password',
+    headers: firstAccessHeaders,
+    payload: {
+      currentPassword: '123456',
+      newPassword: '123456',
+    },
+  });
+  assert.equal(temporaryAsNewPasswordResponse.statusCode, 400);
+
+  const passwordChangeResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/auth/password',
+    headers: firstAccessHeaders,
+    payload: {
+      currentPassword: '123456',
+      newPassword: 'FirstAccess123!',
+    },
+  });
+  assert.equal(passwordChangeResponse.statusCode, 200);
+  const passwordChangePayload = passwordChangeResponse.json() as SuccessResponse<{
+    passwordUpdated: boolean;
+    requiresReauthentication: boolean;
+  }>;
+  assert.equal(passwordChangePayload.data.passwordUpdated, true);
+  assert.equal(passwordChangePayload.data.requiresReauthentication, true);
+
+  const revokedResponse = await app.inject({
+    method: 'GET',
+    url: '/api/auth/me',
+    headers: firstAccessHeaders,
+  });
+  assert.equal(revokedResponse.statusCode, 401);
+
+  const oldPasswordLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'primeiro.acesso@storepage.com',
+      password: '123456',
+      company_slug: 'alpha-store',
+    },
+  });
+  assert.equal(oldPasswordLoginResponse.statusCode, 401);
+
+  const newPasswordLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'primeiro.acesso@storepage.com',
+      password: 'FirstAccess123!',
+      company_slug: 'alpha-store',
+    },
+  });
+  assert.equal(newPasswordLoginResponse.statusCode, 200);
+  const newPasswordLoginPayload = newPasswordLoginResponse.json() as SuccessResponse<{
+    user: { firstAccess: boolean };
+  }>;
+  assert.equal(newPasswordLoginPayload.data.user.firstAccess, false);
 });
 
 test('logout revokes the current session and blocks subsequent authenticated access', async (t) => {
@@ -1200,6 +1492,21 @@ test('invite validation and activation create an authenticated user session', as
   assert.match(inviteCookieHeader, /Path=\/api\/auth\/invites/);
   assert.doesNotMatch(inviteCookieHeader, /Secure/);
 
+  const temporaryPasswordActivationResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/invites/activate',
+    headers: {
+      cookie: inviteCookieHeader.split(';')[0]!,
+    },
+    payload: {
+      email: 'invite.alpha@storepage.com',
+      cpf: '44444444444',
+      password: '123456',
+      orgUnitId: UNIT_ALPHA_ID,
+    },
+  });
+  assert.equal(temporaryPasswordActivationResponse.statusCode, 400);
+
   const activationResponse = await app.inject({
     method: 'POST',
     url: '/api/auth/invites/activate',
@@ -1320,7 +1627,10 @@ test('invite activation sessions require valid tokens and final activation requi
 
 test('invite activation cookie is secure in production', async (t) => {
   const env = createJwtEnv({
+    ...smtpInviteDeliveryEnv(),
     NODE_ENV: 'production',
+    CORS_ORIGINS: 'https://app.storepage.com',
+    CORS_ALLOW_CREDENTIALS: 'true',
   });
   const seed = await createSeed();
   const app = buildApp(env, { seed });
@@ -1477,7 +1787,7 @@ test('admin user endpoints enforce tenant isolation and self-protection rules', 
 
   assert.equal(crossTenantResponse.statusCode, 404);
 
-  const createInviteResponse = await app.inject({
+  const createUserResponse = await app.inject({
     method: 'POST',
     url: '/api/admin/users/invite',
     headers: {
@@ -1492,13 +1802,26 @@ test('admin user endpoints enforce tenant isolation and self-protection rules', 
     },
   });
 
-  assert.equal(createInviteResponse.statusCode, 201);
-  const createInvitePayload = createInviteResponse.json() as SuccessResponse<{
-    invite: { email: string };
-    activationToken: string;
+  assert.equal(createUserResponse.statusCode, 201);
+  const createUserPayload = createUserResponse.json() as SuccessResponse<{
+    user: { id: string; email: string; status: string; firstAccess: boolean };
   }>;
-  assert.equal(createInvitePayload.data.invite.email, 'novo.gestor@storepage.com');
-  assert.ok(createInvitePayload.data.activationToken.length > 10);
+  assert.equal(createUserPayload.data.user.email, 'novo.gestor@storepage.com');
+  assert.equal(createUserPayload.data.user.status, 'ACTIVE');
+  assert.equal(createUserPayload.data.user.firstAccess, true);
+  assert.equal(createUserResponse.body.includes('123456'), false);
+  assert.equal(createUserResponse.body.includes('scrypt$'), false);
+  assert.equal(createUserResponse.body.includes('activationToken'), false);
+  assert.equal(createUserResponse.body.includes('inviteToken'), false);
+  assert.equal(createUserResponse.body.includes('/ativar-convite'), false);
+
+  const createdUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'novo.gestor@storepage.com');
+  assert.ok(createdUser);
+  assert.equal(createdUser.id, createUserPayload.data.user.id);
+  assert.equal(createdUser.status, 'ACTIVE');
+  assert.equal(createdUser.firstAccess, true);
+  assert.ok(createdUser.passwordHash);
+  assert.equal(createdUser.passwordHash.includes('123456'), false);
 
   const selfDeleteResponse = await app.inject({
     method: 'DELETE',
@@ -1513,6 +1836,291 @@ test('admin user endpoints enforce tenant isolation and self-protection rules', 
   assert.equal(selfDeletePayload.code, 'SELF_MODIFICATION_FORBIDDEN');
 });
 
+test('admin user creation issues a temporary first-access password without leaking it', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const login = await loginAsAdminAlpha(app);
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/admin/users/invite',
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+    payload: {
+      name: 'Entrega Segura',
+      email: 'entrega.segura@storepage.com',
+      cpf: '55555555556',
+      role: 'USER',
+      orgUnitId: UNIT_ALPHA_ID,
+    },
+  });
+
+  assert.equal(response.statusCode, 201);
+  const payload = response.json() as SuccessResponse<{
+    user: { id: string; email: string; status: string; firstAccess: boolean };
+  }>;
+  assert.equal(payload.data.user.email, 'entrega.segura@storepage.com');
+  assert.equal(payload.data.user.status, 'ACTIVE');
+  assert.equal(payload.data.user.firstAccess, true);
+  assert.equal(response.body.includes('123456'), false);
+  assert.equal(response.body.includes('scrypt$'), false);
+  assert.equal(response.body.includes('/ativar-convite/'), false);
+  assert.equal(response.body.includes('activationUrl'), false);
+
+  const savedUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'entrega.segura@storepage.com');
+  assert.ok(savedUser);
+  assert.equal(savedUser.id, payload.data.user.id);
+  assert.equal(savedUser.status, 'ACTIVE');
+  assert.equal(savedUser.firstAccess, true);
+  assert.ok(savedUser.passwordHash);
+  assert.equal(savedUser.passwordHash.includes('123456'), false);
+  assert.equal(await new PasswordService().verifyPassword('123456', savedUser.passwordHash), true);
+});
+
+test('invite delivery attempts batch latest lookup preserves tenant isolation', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  await app.repositories.inviteDeliveryAttempt.save({
+    id: '84848484-8484-4484-8484-848484848484',
+    inviteId: INVITE_ALPHA_ID,
+    companyId: COMPANY_ALPHA_ID,
+    channel: 'email',
+    provider: 'smtp',
+    status: 'failed',
+    errorCode: 'OLDER_FAILURE',
+    requestedByUserId: ADMIN_ALPHA_ID,
+    sentAt: null,
+    createdAt: '2026-04-24T12:00:00.000Z',
+  });
+
+  await app.repositories.inviteDeliveryAttempt.save({
+    id: '85858585-8585-4585-8585-858585858585',
+    inviteId: INVITE_ALPHA_ID,
+    companyId: COMPANY_ALPHA_ID,
+    channel: 'email',
+    provider: 'smtp',
+    status: 'sent',
+    errorCode: null,
+    requestedByUserId: ADMIN_ALPHA_ID,
+    sentAt: '2026-04-25T12:00:00.000Z',
+    createdAt: '2026-04-25T12:00:00.000Z',
+  });
+
+  await app.repositories.inviteDeliveryAttempt.save({
+    id: '86868686-8686-4686-8686-868686868686',
+    inviteId: INVITE_ALPHA_ID,
+    companyId: COMPANY_BETA_ID,
+    channel: 'email',
+    provider: 'smtp',
+    status: 'failed',
+    errorCode: 'CROSS_TENANT_NEWER',
+    requestedByUserId: ADMIN_BETA_ID,
+    sentAt: null,
+    createdAt: '2026-04-26T12:00:00.000Z',
+  });
+
+  const latestByInvite = await app.repositories.inviteDeliveryAttempt.findLatestForInvites(COMPANY_ALPHA_ID, [
+    INVITE_ALPHA_ID,
+    '99999999-9999-4999-8999-111111111111',
+  ]);
+  assert.equal(latestByInvite.get(INVITE_ALPHA_ID)?.status, 'sent');
+  assert.equal(latestByInvite.get(INVITE_ALPHA_ID)?.errorCode, null);
+  assert.equal(latestByInvite.has('99999999-9999-4999-8999-111111111111'), false);
+
+  const login = await loginAsAdminAlpha(app);
+  const listResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/users',
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+  });
+
+  assert.equal(listResponse.statusCode, 200);
+  const listPayload = listResponse.json() as SuccessResponse<{
+    invites: Array<{ id: string; activationDelivery: { status: string; errorCode?: string } }>;
+  }>;
+  const invite = listPayload.data.invites.find((entry) => entry.id === INVITE_ALPHA_ID);
+  assert.equal(invite?.activationDelivery.status, 'sent');
+  assert.equal(listResponse.body.includes('invite_token_alpha_pending_12345'), false);
+  assert.equal(listResponse.body.includes('/ativar-convite/'), false);
+});
+
+test('legacy invite delivery failure is reported without leaking token or link', async (t) => {
+  const env = createJwtEnv();
+  const seed = await createSeed();
+  const app = buildApp(env, { seed, inviteDeliveryProvider: new FailingInviteDeliveryProvider() });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const login = await loginAsAdminAlpha(app);
+  const response = await app.inject({
+    method: 'POST',
+    url: `/api/admin/users/invites/${INVITE_ALPHA_ID}/resend`,
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const payload = response.json() as SuccessResponse<{
+    invite: { id: string };
+    activationDelivery: { status: string; sent: boolean; lastAttempt: { errorCode: string | null } | null };
+  }>;
+  assert.equal(payload.data.activationDelivery.status, 'failed');
+  assert.equal(payload.data.activationDelivery.sent, false);
+  assert.equal(payload.data.activationDelivery.lastAttempt?.errorCode, 'INVITE_DELIVERY_FAILED');
+
+  const savedInvite = await app.repositories.invite.findById(COMPANY_ALPHA_ID, payload.data.invite.id);
+  assert.ok(savedInvite);
+  assert.equal(response.body.includes(savedInvite.token), false);
+  assert.equal(response.body.includes('/ativar-convite/'), false);
+  assert.equal(response.body.includes('activationUrl'), false);
+
+  const attempt = await app.repositories.inviteDeliveryAttempt.findLatestForInvite(COMPANY_ALPHA_ID, savedInvite.id);
+  assert.ok(attempt);
+  const auditJson = JSON.stringify(attempt);
+  assert.equal(auditJson.includes(savedInvite.token), false);
+  assert.equal(auditJson.includes('/ativar-convite/'), false);
+});
+
+test('admin invite resend enforces tenant and pending invite rules', async (t) => {
+  const env = createJwtEnv();
+  const seed = await createSeed();
+  const provider = new CapturingInviteDeliveryProvider();
+  const app = buildApp(env, { seed, inviteDeliveryProvider: provider });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  await app.repositories.invite.save({
+    id: INVITE_BETA_ID,
+    companyId: COMPANY_BETA_ID,
+    name: 'Invite Beta',
+    email: 'invite.beta@storepage.com',
+    normalizedEmail: 'invite.beta@storepage.com',
+    cpf: '55555555558',
+    role: 'USER',
+    orgUnitId: UNIT_BETA_ID,
+    token: 'invite_token_beta_pending_12345',
+    status: 'PENDING_SETUP',
+    invitedByUserId: ADMIN_BETA_ID,
+    userId: null,
+    expiresAt: '2026-06-01T12:00:00.000Z',
+    activatedAt: null,
+    cancelledAt: null,
+    deletedAt: null,
+    createdAt: '2026-04-23T12:00:00.000Z',
+    updatedAt: '2026-04-23T12:00:00.000Z',
+  });
+
+  const login = await loginAsAdminAlpha(app);
+  const resendResponse = await app.inject({
+    method: 'POST',
+    url: `/api/admin/users/invites/${INVITE_ALPHA_ID}/resend`,
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+  });
+
+  assert.equal(resendResponse.statusCode, 200);
+  assert.equal(provider.calls.length, 1);
+  assert.equal(provider.calls[0]?.activationUrl.includes('invite_token_alpha_pending_12345'), true);
+  assert.equal(resendResponse.body.includes('invite_token_alpha_pending_12345'), false);
+  assert.equal(resendResponse.body.includes('/ativar-convite/'), false);
+
+  const resendPayload = resendResponse.json() as SuccessResponse<{
+    activationDelivery: { status: string; sent: boolean; lastAttempt: { status: string } | null };
+  }>;
+  assert.equal(resendPayload.data.activationDelivery.status, 'sent');
+  assert.equal(resendPayload.data.activationDelivery.sent, true);
+
+  const latestAttempt = await app.repositories.inviteDeliveryAttempt.findLatestForInvite(COMPANY_ALPHA_ID, INVITE_ALPHA_ID);
+  assert.ok(latestAttempt);
+  assert.equal(latestAttempt.status, 'sent');
+  assert.equal(JSON.stringify(latestAttempt).includes('invite_token_alpha_pending_12345'), false);
+
+  const crossTenantResponse = await app.inject({
+    method: 'POST',
+    url: `/api/admin/users/invites/${INVITE_BETA_ID}/resend`,
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+  });
+  assert.equal(crossTenantResponse.statusCode, 404);
+
+  const blockedInvites = [
+    {
+      id: '81818181-8181-4181-8181-818181818181',
+      status: 'CANCELLED' as const,
+      activatedAt: null,
+      cancelledAt: '2026-04-23T12:00:00.000Z',
+      userId: null,
+      expiresAt: '2026-06-01T12:00:00.000Z',
+      expectedStatus: 409,
+    },
+    {
+      id: '82828282-8282-4282-8282-828282828282',
+      status: 'ACTIVATED' as const,
+      activatedAt: '2026-04-23T12:00:00.000Z',
+      cancelledAt: null,
+      userId: USER_ALPHA_ID,
+      expiresAt: '2026-06-01T12:00:00.000Z',
+      expectedStatus: 409,
+    },
+    {
+      id: '83838383-8383-4383-8383-838383838383',
+      status: 'PENDING_SETUP' as const,
+      activatedAt: null,
+      cancelledAt: null,
+      userId: null,
+      expiresAt: '2026-04-01T12:00:00.000Z',
+      expectedStatus: 410,
+    },
+  ];
+
+  for (const invite of blockedInvites) {
+    await app.repositories.invite.save({
+      id: invite.id,
+      companyId: COMPANY_ALPHA_ID,
+      name: 'Blocked Invite',
+      email: `${invite.id}@storepage.com`,
+      normalizedEmail: `${invite.id}@storepage.com`,
+      cpf: null,
+      role: 'USER',
+      orgUnitId: UNIT_ALPHA_ID,
+      token: `invite_token_${invite.id.replace(/-/g, '')}`,
+      status: invite.status,
+      invitedByUserId: ADMIN_ALPHA_ID,
+      userId: invite.userId,
+      expiresAt: invite.expiresAt,
+      activatedAt: invite.activatedAt,
+      cancelledAt: invite.cancelledAt,
+      deletedAt: null,
+      createdAt: '2026-04-23T12:00:00.000Z',
+      updatedAt: '2026-04-23T12:00:00.000Z',
+    });
+
+    const blockedResponse = await app.inject({
+      method: 'POST',
+      url: `/api/admin/users/invites/${invite.id}/resend`,
+      headers: {
+        authorization: `Bearer ${login.data.accessToken}`,
+      },
+    });
+    assert.equal(blockedResponse.statusCode, invite.expectedStatus);
+  }
+});
+
 test('settings and organizational structure endpoints support admin management and forbid regular users', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {
@@ -1520,6 +2128,41 @@ test('settings and organizational structure endpoints support admin management a
   });
 
   const adminLogin = await loginAsAdminAlpha(app);
+
+  const logoOnlyAppearanceResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/appearance',
+    headers: {
+      authorization: `Bearer ${adminLogin.data.accessToken}`,
+    },
+    payload: {
+      logoUrl: 'https://cdn.storepage.test/alpha/logo-v2.png',
+    },
+  });
+
+  assert.equal(logoOnlyAppearanceResponse.statusCode, 200);
+
+  const heroImageOnlyAppearanceResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/appearance',
+    headers: {
+      authorization: `Bearer ${adminLogin.data.accessToken}`,
+    },
+    payload: {
+      hero: {
+        imageUrl: 'https://cdn.storepage.test/alpha/hero-v2.png',
+      },
+    },
+  });
+
+  assert.equal(heroImageOnlyAppearanceResponse.statusCode, 200);
+  const heroImageOnlyAppearancePayload = heroImageOnlyAppearanceResponse.json() as SuccessResponse<{
+    branding: { logoUrl: string | null; hero: { title: string; subtitle: string; imageUrl: string | null } };
+  }>;
+  assert.equal(heroImageOnlyAppearancePayload.data.branding.logoUrl, 'https://cdn.storepage.test/alpha/logo-v2.png');
+  assert.equal(heroImageOnlyAppearancePayload.data.branding.hero.imageUrl, 'https://cdn.storepage.test/alpha/hero-v2.png');
+  assert.equal(heroImageOnlyAppearancePayload.data.branding.hero.title, 'Portal Alpha');
+  assert.equal(heroImageOnlyAppearancePayload.data.branding.hero.subtitle, 'Treinamentos e operacao do tenant Alpha.');
 
   const updateAppearanceResponse = await app.inject({
     method: 'PATCH',
@@ -1618,6 +2261,401 @@ test('settings and organizational structure endpoints support admin management a
   assert.equal(forbiddenAdminResponse.statusCode, 403);
   const forbiddenAdminPayload = forbiddenAdminResponse.json() as ErrorResponse;
   assert.equal(forbiddenAdminPayload.code, 'FORBIDDEN');
+});
+
+test('admin structure supports a single configured hierarchy level for units', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const betaLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'admin.beta@storepage.com',
+      password: 'Password123!',
+      company_slug: 'beta-store',
+    },
+  });
+
+  assert.equal(betaLoginResponse.statusCode, 200);
+  const betaLogin = betaLoginResponse.json() as SuccessResponse<{ accessToken: string }>;
+
+  const createTopLevelResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/top-levels',
+    headers: {
+      authorization: `Bearer ${betaLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Regional Sul',
+      levelIndex: 1,
+      parentId: null,
+    },
+  });
+
+  assert.equal(createTopLevelResponse.statusCode, 201);
+  const createTopLevelPayload = createTopLevelResponse.json() as SuccessResponse<{ id: string }>;
+
+  const createUnitResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/units',
+    headers: {
+      authorization: `Bearer ${betaLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Filial Regional',
+      topLevelId: createTopLevelPayload.data.id,
+      active: true,
+    },
+  });
+
+  assert.equal(createUnitResponse.statusCode, 201);
+});
+
+test('admin structure inserts a parent level through an explicit safe transition', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const betaLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'admin.beta@storepage.com',
+      password: 'Password123!',
+      company_slug: 'beta-store',
+    },
+  });
+
+  assert.equal(betaLoginResponse.statusCode, 200);
+  const betaLogin = betaLoginResponse.json() as SuccessResponse<{ accessToken: string }>;
+  const betaHeaders = { authorization: `Bearer ${betaLogin.data.accessToken}` };
+
+  const createTopLevelResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/top-levels',
+    headers: betaHeaders,
+    payload: {
+      name: 'Regional Sul',
+      levelIndex: 1,
+      parentId: null,
+    },
+  });
+
+  assert.equal(createTopLevelResponse.statusCode, 201);
+  const createTopLevelPayload = createTopLevelResponse.json() as SuccessResponse<{ id: string }>;
+  const regionalId = createTopLevelPayload.data.id;
+
+  const legacyParentResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/top-levels',
+    headers: betaHeaders,
+    payload: {
+      name: 'Sede Legada',
+      levelIndex: 1,
+      parentId: null,
+    },
+  });
+
+  assert.equal(legacyParentResponse.statusCode, 201);
+  const legacyParentPayload = legacyParentResponse.json() as SuccessResponse<{ id: string }>;
+  const legacyParentId = legacyParentPayload.data.id;
+
+  const regionalRecord = (await app.repositories.structure.listTopLevels(COMPANY_BETA_ID)).find(
+    (topLevel) => topLevel.id === regionalId,
+  );
+  assert.ok(regionalRecord);
+  await app.repositories.structure.saveTopLevel({
+    ...regionalRecord,
+    parentId: legacyParentId,
+  });
+
+  const createUnitResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/units',
+    headers: betaHeaders,
+    payload: {
+      name: 'Filial Regional',
+      topLevelId: regionalId,
+      active: true,
+    },
+  });
+
+  assert.equal(createUnitResponse.statusCode, 201);
+  const createUnitPayload = createUnitResponse.json() as SuccessResponse<{ id: string; topLevelId: string }>;
+  assert.equal(createUnitPayload.data.topLevelId, regionalId);
+
+  const directSettingsUpdateResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/general',
+    headers: betaHeaders,
+    payload: {
+      orgLevels: ['Diretoria', 'Regiao'],
+    },
+  });
+
+  assert.equal(directSettingsUpdateResponse.statusCode, 409);
+  const directSettingsUpdatePayload = directSettingsUpdateResponse.json() as ErrorResponse;
+  assert.equal(directSettingsUpdatePayload.code, 'RESOURCE_IN_USE');
+
+  const transitionResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/transitions/insert-parent-level',
+    headers: betaHeaders,
+    payload: {
+      orgLevels: ['Diretoria', 'Regiao'],
+      orgUnitName: 'Filial',
+      parentName: 'Diretoria Nacional',
+      childTopLevelIds: [regionalId, legacyParentId],
+    },
+  });
+
+  assert.equal(transitionResponse.statusCode, 200);
+  const transitionPayload = transitionResponse.json() as SuccessResponse<{
+    general: { orgLevels: string[]; orgUnitName: string };
+  }>;
+  assert.deepEqual(transitionPayload.data.general.orgLevels, ['Diretoria', 'Regiao']);
+  assert.equal(transitionPayload.data.general.orgUnitName, 'Filial');
+
+  const structureResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/structure',
+    headers: betaHeaders,
+  });
+
+  assert.equal(structureResponse.statusCode, 200);
+  const structurePayload = structureResponse.json() as SuccessResponse<{
+    orgLevels: string[];
+    topLevels: Array<{ id: string; name: string; levelIndex: number; parentId: string | null }>;
+    units: Array<{ id: string; topLevelId: string | null }>;
+  }>;
+
+  const parent = structurePayload.data.topLevels.find((topLevel) => topLevel.name === 'Diretoria Nacional');
+  const regional = structurePayload.data.topLevels.find((topLevel) => topLevel.id === regionalId);
+  const legacyParent = structurePayload.data.topLevels.find((topLevel) => topLevel.id === legacyParentId);
+  const unit = structurePayload.data.units.find((entry) => entry.id === createUnitPayload.data.id);
+
+  assert.ok(parent);
+  assert.equal(parent.levelIndex, 1);
+  assert.equal(parent.parentId, null);
+  assert.ok(regional);
+  assert.equal(regional.levelIndex, 2);
+  assert.equal(regional.parentId, parent.id);
+  assert.ok(legacyParent);
+  assert.equal(legacyParent.levelIndex, 2);
+  assert.equal(legacyParent.parentId, parent.id);
+  assert.ok(unit);
+  assert.equal(unit.topLevelId, regionalId);
+});
+
+test('admin structure parent-level transition validates tenant scope and admin access', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const betaLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'admin.beta@storepage.com',
+      password: 'Password123!',
+      company_slug: 'beta-store',
+    },
+  });
+
+  assert.equal(betaLoginResponse.statusCode, 200);
+  const betaLogin = betaLoginResponse.json() as SuccessResponse<{ accessToken: string }>;
+  const betaHeaders = { authorization: `Bearer ${betaLogin.data.accessToken}` };
+
+  const createTopLevelResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/top-levels',
+    headers: betaHeaders,
+    payload: {
+      name: 'Regional Sul',
+      levelIndex: 1,
+      parentId: null,
+    },
+  });
+
+  assert.equal(createTopLevelResponse.statusCode, 201);
+
+  const crossTenantResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/transitions/insert-parent-level',
+    headers: betaHeaders,
+    payload: {
+      orgLevels: ['Diretoria', 'Regiao'],
+      parentName: 'Diretoria Nacional',
+      childTopLevelIds: [TOP_LEVEL_ALPHA_ID],
+    },
+  });
+
+  assert.equal(crossTenantResponse.statusCode, 400);
+  const crossTenantPayload = crossTenantResponse.json() as ErrorResponse;
+  assert.equal(crossTenantPayload.code, 'BAD_REQUEST');
+
+  const forgedCompanyResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/transitions/insert-parent-level',
+    headers: betaHeaders,
+    payload: {
+      companyId: COMPANY_ALPHA_ID,
+      orgLevels: ['Diretoria', 'Regiao'],
+      parentName: 'Diretoria Nacional',
+      childTopLevelIds: [TOP_LEVEL_ALPHA_ID],
+    },
+  });
+
+  assert.equal(forgedCompanyResponse.statusCode, 400);
+
+  const userLogin = await loginAsUserAlpha(app);
+  const forbiddenResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/transitions/insert-parent-level',
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+    payload: {
+      orgLevels: ['Diretoria', 'Regional'],
+      parentName: 'Diretoria Nacional',
+      childTopLevelIds: [TOP_LEVEL_ALPHA_ID],
+    },
+  });
+
+  assert.equal(forbiddenResponse.statusCode, 403);
+});
+
+test('admin structure rejects units linked to non-leaf hierarchy levels', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const login = await loginAsAdminAlpha(app);
+
+  const createUnitResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/units',
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+    payload: {
+      name: 'Loja Nivel Intermediario',
+      topLevelId: TOP_LEVEL_ALPHA_ID,
+      active: true,
+    },
+  });
+
+  assert.equal(createUnitResponse.statusCode, 400);
+  const createUnitPayload = createUnitResponse.json() as ErrorResponse;
+  assert.equal(createUnitPayload.code, 'BAD_REQUEST');
+});
+
+test('admin structure only allows null unit parent when no hierarchy levels are configured', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const betaLoginResponse = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'admin.beta@storepage.com',
+      password: 'Password123!',
+      company_slug: 'beta-store',
+    },
+  });
+
+  assert.equal(betaLoginResponse.statusCode, 200);
+  const betaLogin = betaLoginResponse.json() as SuccessResponse<{ accessToken: string }>;
+
+  const rejectedResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/units',
+    headers: {
+      authorization: `Bearer ${betaLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Filial Sem Pai Bloqueada',
+      topLevelId: null,
+      active: true,
+    },
+  });
+
+  assert.equal(rejectedResponse.statusCode, 400);
+
+  const clearLevelsResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/general',
+    headers: {
+      authorization: `Bearer ${betaLogin.data.accessToken}`,
+    },
+    payload: {
+      orgLevels: [],
+    },
+  });
+
+  assert.equal(clearLevelsResponse.statusCode, 200);
+
+  const allowedResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/units',
+    headers: {
+      authorization: `Bearer ${betaLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Filial Sem Pai Permitida',
+      topLevelId: null,
+      active: true,
+    },
+  });
+
+  assert.equal(allowedResponse.statusCode, 201);
+});
+
+test('admin settings rejects reducing hierarchy levels while deeper top-level nodes exist', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const login = await loginAsAdminAlpha(app);
+
+  const createTopLevelResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/structure/top-levels',
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+    payload: {
+      name: 'Distrito Bloqueador',
+      levelIndex: 2,
+      parentId: TOP_LEVEL_ALPHA_ID,
+    },
+  });
+
+  assert.equal(createTopLevelResponse.statusCode, 201);
+
+  const reduceLevelsResponse = await app.inject({
+    method: 'PATCH',
+    url: '/api/admin/settings/general',
+    headers: {
+      authorization: `Bearer ${login.data.accessToken}`,
+    },
+    payload: {
+      orgLevels: ['Regional'],
+    },
+  });
+
+  assert.equal(reduceLevelsResponse.statusCode, 409);
+  const reduceLevelsPayload = reduceLevelsResponse.json() as ErrorResponse;
+  assert.equal(reduceLevelsPayload.code, 'RESOURCE_IN_USE');
 });
 
 test('user rewards endpoint wraps legacy stats RPC behind authenticated self-service access', async (t) => {
@@ -1720,6 +2758,75 @@ test('survey response endpoint persists responses and stamps actor tenant identi
   assert.equal(emptyAnswersResponse.statusCode, 400);
   const emptyAnswersPayload = emptyAnswersResponse.json() as ErrorResponse;
   assert.equal(emptyAnswersPayload.code, 'VALIDATION_ERROR');
+
+  const emptyRequiredAnswerResponse = await app.inject({
+    method: 'POST',
+    url: `/api/surveys/${SURVEY_ALPHA_ID}/responses`,
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+    payload: {
+      answers: [
+        {
+          question_id: SURVEY_QUESTION_ALPHA_ID,
+          value: {
+            type: 'SHORT_TEXT',
+            text: '   ',
+          },
+        },
+      ],
+    },
+  });
+
+  assert.equal(emptyRequiredAnswerResponse.statusCode, 400);
+  const emptyRequiredAnswerPayload = emptyRequiredAnswerResponse.json() as ErrorResponse;
+  assert.equal(emptyRequiredAnswerPayload.code, 'BAD_REQUEST');
+
+  const mismatchedQuestionTypeResponse = await app.inject({
+    method: 'POST',
+    url: `/api/surveys/${SURVEY_ALPHA_ID}/responses`,
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+    payload: {
+      answers: [
+        {
+          question_id: SURVEY_QUESTION_ALPHA_ID,
+          value: {
+            type: 'YES_NO',
+            value: true,
+          },
+        },
+      ],
+    },
+  });
+
+  assert.equal(mismatchedQuestionTypeResponse.statusCode, 400);
+  const mismatchedQuestionTypePayload = mismatchedQuestionTypeResponse.json() as ErrorResponse;
+  assert.equal(mismatchedQuestionTypePayload.code, 'BAD_REQUEST');
+
+  const deletedQuestionResponse = await app.inject({
+    method: 'POST',
+    url: `/api/surveys/${SURVEY_ALPHA_ID}/responses`,
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+    payload: {
+      answers: [
+        {
+          question_id: SURVEY_QUESTION_DELETED_ID,
+          value: {
+            type: 'SHORT_TEXT',
+            text: 'Resposta para pergunta removida',
+          },
+        },
+      ],
+    },
+  });
+
+  assert.equal(deletedQuestionResponse.statusCode, 400);
+  const deletedQuestionPayload = deletedQuestionResponse.json() as ErrorResponse;
+  assert.equal(deletedQuestionPayload.code, 'BAD_REQUEST');
 
   const validResponse = await app.inject({
     method: 'POST',
@@ -1990,7 +3097,11 @@ test('phase 5 survey responses and answers are scoped to tenant and authenticate
 });
 
 test('super-admin provisioning endpoint enforces role and validates tenant admin payloads', async (t) => {
-  const { app } = await createFixtureApp();
+  const env = createJwtEnv();
+  const seed = await createSeed();
+  const provider = new CapturingInviteDeliveryProvider();
+  const app = buildApp(env, { seed, inviteDeliveryProvider: provider });
+  await app.ready();
   t.after(async () => {
     await app.close();
   });
@@ -2067,9 +3178,98 @@ test('super-admin provisioning endpoint enforces role and validates tenant admin
     inviteId: string | null;
     userId: string | null;
   }>;
-  assert.equal(provisionPayload.data.status, 'invited');
-  assert.match(provisionPayload.data.inviteId ?? '', /^[0-9a-f-]{36}$/);
-  assert.equal(provisionPayload.data.userId, null);
+  assert.equal(provisionPayload.data.status, 'created_user');
+  assert.equal(provisionPayload.data.inviteId, null);
+  assert.match(provisionPayload.data.userId ?? '', /^[0-9a-f-]{36}$/);
+  assert.equal(provisionResponse.body.includes('123456'), false);
+  assert.equal(provisionResponse.body.includes('scrypt$'), false);
+  assert.equal(provisionResponse.body.includes('activationToken'), false);
+  assert.equal(provisionResponse.body.includes('inviteToken'), false);
+  assert.equal(provisionResponse.body.includes('/ativar-convite'), false);
+
+  const savedInvite = await app.repositories.invite.findPendingByEmail(
+    COMPANY_ALPHA_ID,
+    'admin.provisionado@storepage.com',
+  );
+  assert.equal(savedInvite, null);
+  assert.equal(provider.calls.length, 0);
+
+  const savedUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'admin.provisionado@storepage.com');
+  assert.ok(savedUser);
+  assert.equal(savedUser.id, provisionPayload.data.userId);
+  assert.equal(savedUser.status, 'ACTIVE');
+  assert.equal(savedUser.active, true);
+  assert.equal(savedUser.firstAccess, true);
+  assert.ok(savedUser.passwordHash);
+  assert.equal(savedUser.passwordHash.includes('123456'), false);
+  assert.equal(await new PasswordService().verifyPassword('123456', savedUser.passwordHash), true);
+
+  const duplicateProvisionResponse = await app.inject({
+    method: 'POST',
+    url: `/api/super-admin/companies/${COMPANY_ALPHA_ID}/provision-admin`,
+    headers: {
+      authorization: `Bearer ${superAdminLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'Admin Provisionado Atualizado',
+      email: 'admin.provisionado@storepage.com',
+      role: 'ADMIN',
+    },
+  });
+
+  assert.equal(duplicateProvisionResponse.statusCode, 201);
+  const duplicateProvisionPayload = duplicateProvisionResponse.json() as SuccessResponse<{
+    status: string;
+    inviteId: string | null;
+    userId: string | null;
+  }>;
+  assert.equal(duplicateProvisionPayload.data.status, 'updated_existing');
+  assert.equal(duplicateProvisionPayload.data.inviteId, null);
+  assert.equal(duplicateProvisionPayload.data.userId, savedUser.id);
+  assert.equal(provider.calls.length, 0);
+
+  const updatedProvisionedUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'admin.provisionado@storepage.com');
+  assert.equal(updatedProvisionedUser?.id, savedUser.id);
+  assert.equal(updatedProvisionedUser?.name, 'Admin Provisionado Atualizado');
+  assert.equal(updatedProvisionedUser?.firstAccess, true);
+
+  const userLogin = await loginAsUserAlpha(app);
+  const existingUserProvisionResponse = await app.inject({
+    method: 'POST',
+    url: `/api/super-admin/companies/${COMPANY_ALPHA_ID}/provision-admin`,
+    headers: {
+      authorization: `Bearer ${superAdminLogin.data.accessToken}`,
+    },
+    payload: {
+      name: 'User Alpha Promovido',
+      email: 'user.alpha@storepage.com',
+      role: 'ADMIN',
+    },
+  });
+
+  assert.equal(existingUserProvisionResponse.statusCode, 201);
+  const existingUserProvisionPayload = existingUserProvisionResponse.json() as SuccessResponse<{
+    status: string;
+    inviteId: string | null;
+    userId: string | null;
+  }>;
+  assert.equal(existingUserProvisionPayload.data.status, 'updated_existing');
+  assert.equal(existingUserProvisionPayload.data.inviteId, null);
+  assert.equal(existingUserProvisionPayload.data.userId, USER_ALPHA_ID);
+
+  const updatedUser = await app.repositories.user.findAnyById(USER_ALPHA_ID);
+  assert.equal(updatedUser?.role, 'ADMIN');
+  assert.equal(updatedUser?.status, 'ACTIVE');
+  assert.equal(updatedUser?.active, true);
+
+  const revokedSessionResponse = await app.inject({
+    method: 'GET',
+    url: '/api/auth/me',
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+  });
+  assert.equal(revokedSessionResponse.statusCode, 401);
 });
 
 test('phase 2 repository catalog endpoints enforce tenant scope and support admin CRUD', async (t) => {
@@ -2300,6 +3500,48 @@ test('phase 2 landing and metrics endpoints expose public data safely and record
   const secondRatingPayload = secondRatingResponse.json() as SuccessResponse<{ rating: number }>;
   assert.equal(secondRatingPayload.data.rating, 10);
 
+  const unauthenticatedSummariesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/metrics/content-summaries',
+  });
+  assert.equal(unauthenticatedSummariesResponse.statusCode, 401);
+
+  const contentSummariesResponse = await app.inject({
+    method: 'GET',
+    url: `/api/metrics/content-summaries?repositoryId=${REPOSITORY_ALPHA_ID}`,
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+  });
+  assert.equal(contentSummariesResponse.statusCode, 200);
+  const contentSummariesPayload = contentSummariesResponse.json() as SuccessResponse<
+    Array<{
+      contentId: string;
+      repositoryId: string;
+      viewsCount: number;
+      ratingsCount: number;
+      averageRating: number | null;
+      currentUserRating: number | null;
+      userId?: string;
+    }>
+  >;
+  const alphaSummary = contentSummariesPayload.data.find((summary) => summary.contentId === CONTENT_ALPHA_ID);
+  assert.equal(alphaSummary?.repositoryId, REPOSITORY_ALPHA_ID);
+  assert.equal(alphaSummary?.viewsCount, 1);
+  assert.equal(alphaSummary?.ratingsCount, 1);
+  assert.equal(alphaSummary?.averageRating, 10);
+  assert.equal(alphaSummary?.currentUserRating, 10);
+  assert.equal(alphaSummary?.userId, undefined);
+
+  const crossTenantSummariesResponse = await app.inject({
+    method: 'GET',
+    url: `/api/metrics/content-summaries?repositoryId=${REPOSITORY_BETA_ID}`,
+    headers: {
+      authorization: `Bearer ${userLogin.data.accessToken}`,
+    },
+  });
+  assert.equal(crossTenantSummariesResponse.statusCode, 404);
+
   const adminLogin = await loginAsAdminAlpha(app);
   const repositoryMetricsResponse = await app.inject({
     method: 'GET',
@@ -2333,6 +3575,246 @@ test('phase 2 landing and metrics endpoints expose public data safely and record
   assert.equal(userActivityPayload.data[0]?.userId, USER_ALPHA_ID);
 });
 
+test('user visible users endpoint is authenticated, tenant-scoped and sanitized', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const unauthenticatedResponse = await app.inject({
+    method: 'GET',
+    url: '/api/users/me/visible-users',
+  });
+  assert.equal(unauthenticatedResponse.statusCode, 401);
+
+  const userLogin = await loginAsUserAlpha(app);
+  const userHeaders = { authorization: `Bearer ${userLogin.data.accessToken}` };
+  const ownUnitResponse = await app.inject({
+    method: 'GET',
+    url: '/api/users/me/visible-users',
+    headers: userHeaders,
+  });
+  assert.equal(ownUnitResponse.statusCode, 200);
+  const ownUnitPayload = ownUnitResponse.json() as SuccessResponse<
+    Array<{
+      id: string;
+      name: string;
+      avatarUrl: string | null;
+      orgUnitId: string | null;
+      email?: string;
+      cpf?: string;
+      role?: string;
+      status?: string;
+    }>
+  >;
+  assert.ok(ownUnitPayload.data.some((visibleUser) => visibleUser.id === USER_ALPHA_ID));
+  assert.ok(ownUnitPayload.data.some((visibleUser) => visibleUser.id === ADMIN_ALPHA_ID));
+  assert.equal(ownUnitPayload.data.some((visibleUser) => visibleUser.id === ADMIN_BETA_ID), false);
+  assert.equal(ownUnitPayload.data.some((visibleUser) => visibleUser.email !== undefined), false);
+  assert.equal(ownUnitPayload.data.some((visibleUser) => visibleUser.cpf !== undefined), false);
+  assert.equal(ownUnitPayload.data.some((visibleUser) => visibleUser.role !== undefined), false);
+  assert.equal(ownUnitPayload.data.some((visibleUser) => visibleUser.status !== undefined), false);
+
+  const filteredResponse = await app.inject({
+    method: 'GET',
+    url: `/api/users/me/visible-users?ids=${ADMIN_ALPHA_ID},${ADMIN_BETA_ID}`,
+    headers: userHeaders,
+  });
+  assert.equal(filteredResponse.statusCode, 200);
+  const filteredPayload = filteredResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  assert.deepEqual(filteredPayload.data.map((visibleUser) => visibleUser.id), [ADMIN_ALPHA_ID]);
+});
+
+test('restricted access rules deny empty ACLs and enforce user, unit, exclusion and tenant scope', async (t) => {
+  const { app } = await createFixtureApp();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const adminLogin = await loginAsAdminAlpha(app);
+  const userLogin = await loginAsUserAlpha(app);
+  const adminHeaders = { authorization: `Bearer ${adminLogin.data.accessToken}` };
+  const userHeaders = { authorization: `Bearer ${userLogin.data.accessToken}` };
+
+  const emptyRestrictedRequests = await Promise.all([
+    app.inject({
+      method: 'POST',
+      url: '/api/admin/repositories',
+      headers: adminHeaders,
+      payload: { name: 'Repo restrito vazio', accessType: 'RESTRICTED' },
+    }),
+    app.inject({
+      method: 'POST',
+      url: '/api/admin/courses',
+      headers: adminHeaders,
+      payload: { title: 'Curso restrito vazio', accessType: 'RESTRICTED' },
+    }),
+    app.inject({
+      method: 'POST',
+      url: '/api/admin/checklists',
+      headers: adminHeaders,
+      payload: { title: 'Checklist restrito vazio', accessType: 'RESTRICTED' },
+    }),
+    app.inject({
+      method: 'POST',
+      url: '/api/admin/surveys',
+      headers: adminHeaders,
+      payload: { title: 'Pesquisa restrita vazia', accessType: 'RESTRICTED' },
+    }),
+  ]);
+  emptyRestrictedRequests.forEach((response) => assert.equal(response.statusCode, 400));
+
+  const crossTenantTargetResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/repositories',
+    headers: adminHeaders,
+    payload: {
+      name: 'Repo alvo de outro tenant',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_BETA_ID],
+    },
+  });
+  assert.equal(crossTenantTargetResponse.statusCode, 400);
+
+  const unitRepositoryResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/repositories',
+    headers: adminHeaders,
+    payload: {
+      name: 'Repo liberado por unidade',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_ALPHA_ID],
+    },
+  });
+  assert.equal(unitRepositoryResponse.statusCode, 201);
+  const unitRepositoryPayload = unitRepositoryResponse.json() as SuccessResponse<{ id: string }>;
+
+  const deniedRepositoryResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/repositories',
+    headers: adminHeaders,
+    payload: {
+      name: 'Repo negado por unidade',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_ALPHA_OTHER_ID],
+    },
+  });
+  assert.equal(deniedRepositoryResponse.statusCode, 201);
+  const deniedRepositoryPayload = deniedRepositoryResponse.json() as SuccessResponse<{ id: string }>;
+
+  const repositoriesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/repositories',
+    headers: userHeaders,
+  });
+  assert.equal(repositoriesResponse.statusCode, 200);
+  const repositoriesPayload = repositoriesResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  assert.equal(repositoriesPayload.data.some((repository) => repository.id === unitRepositoryPayload.data.id), true);
+  assert.equal(repositoriesPayload.data.some((repository) => repository.id === deniedRepositoryPayload.data.id), false);
+
+  const deniedRepositoryDetailResponse = await app.inject({
+    method: 'GET',
+    url: `/api/repositories/${deniedRepositoryPayload.data.id}`,
+    headers: userHeaders,
+  });
+  assert.equal(deniedRepositoryDetailResponse.statusCode, 403);
+
+  const regionCourseResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/courses',
+    headers: adminHeaders,
+    payload: {
+      title: 'Curso liberado por regional',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedRegionIds: [TOP_LEVEL_ALPHA_ID],
+    },
+  });
+  assert.equal(regionCourseResponse.statusCode, 201);
+  const regionCoursePayload = regionCourseResponse.json() as SuccessResponse<{ id: string }>;
+
+  const excludedCourseResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/courses',
+    headers: adminHeaders,
+    payload: {
+      title: 'Curso com exclusao',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_ALPHA_ID],
+      excludedUserIds: [USER_ALPHA_ID],
+    },
+  });
+  assert.equal(excludedCourseResponse.statusCode, 201);
+  const excludedCoursePayload = excludedCourseResponse.json() as SuccessResponse<{ id: string }>;
+
+  const coursesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/courses',
+    headers: userHeaders,
+  });
+  assert.equal(coursesResponse.statusCode, 200);
+  const coursesPayload = coursesResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  assert.equal(coursesPayload.data.some((course) => course.id === regionCoursePayload.data.id), true);
+  assert.equal(coursesPayload.data.some((course) => course.id === excludedCoursePayload.data.id), false);
+
+  const excludedCourseDetailResponse = await app.inject({
+    method: 'GET',
+    url: `/api/courses/${excludedCoursePayload.data.id}`,
+    headers: userHeaders,
+  });
+  assert.equal(excludedCourseDetailResponse.statusCode, 403);
+
+  const checklistResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/checklists',
+    headers: adminHeaders,
+    payload: {
+      title: 'Checklist liberado por usuario',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedUserIds: [USER_ALPHA_ID],
+    },
+  });
+  assert.equal(checklistResponse.statusCode, 201);
+  const checklistPayload = checklistResponse.json() as SuccessResponse<{ id: string; excludedUserIds?: string[] }>;
+  assert.deepEqual(checklistPayload.data.excludedUserIds, []);
+
+  const checklistsResponse = await app.inject({
+    method: 'GET',
+    url: '/api/checklists',
+    headers: userHeaders,
+  });
+  assert.equal(checklistsResponse.statusCode, 200);
+  const checklistsPayload = checklistsResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  assert.equal(checklistsPayload.data.some((checklist) => checklist.id === checklistPayload.data.id), true);
+
+  const surveyResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/surveys',
+    headers: adminHeaders,
+    payload: {
+      title: 'Pesquisa liberada por unidade',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_ALPHA_ID],
+    },
+  });
+  assert.equal(surveyResponse.statusCode, 201);
+  const surveyPayload = surveyResponse.json() as SuccessResponse<{ id: string }>;
+
+  const surveysResponse = await app.inject({
+    method: 'GET',
+    url: '/api/surveys',
+    headers: userHeaders,
+  });
+  assert.equal(surveysResponse.statusCode, 200);
+  const surveysPayload = surveysResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  assert.equal(surveysPayload.data.some((survey) => survey.id === surveyPayload.data.id), true);
+});
+
 test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {
@@ -2349,8 +3831,9 @@ test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete
   });
 
   assert.equal(coursesResponse.statusCode, 200);
-  const coursesPayload = coursesResponse.json() as SuccessResponse<Array<{ id: string }>>;
+  const coursesPayload = coursesResponse.json() as SuccessResponse<Array<{ id: string; layoutTemplate: string }>>;
   assert.equal(coursesPayload.data.some((course) => course.id === COURSE_ALPHA_ID), true);
+  assert.equal(coursesPayload.data.find((course) => course.id === COURSE_ALPHA_ID)?.layoutTemplate, 'focus');
   assert.equal(coursesPayload.data.some((course) => course.id === COURSE_BETA_ID), false);
 
   const crossTenantResponse = await app.inject({
@@ -2384,7 +3867,58 @@ test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete
   });
 
   assert.equal(createCourseResponse.statusCode, 201);
-  const createdCourse = createCourseResponse.json() as SuccessResponse<{ id: string }>;
+  const createdCourse = createCourseResponse.json() as SuccessResponse<{ id: string; layoutTemplate: string }>;
+  assert.equal(createdCourse.data.layoutTemplate, 'focus');
+
+  const restrictedCourseResponse = await app.inject({
+    method: 'POST',
+    url: '/api/admin/courses',
+    headers: authHeaders,
+    payload: {
+      title: 'Curso restrito com layout',
+      status: 'ACTIVE',
+      accessType: 'RESTRICTED',
+      allowedStoreIds: [UNIT_ALPHA_ID],
+      excludedUserIds: [USER_ALPHA_ID],
+    },
+  });
+
+  assert.equal(restrictedCourseResponse.statusCode, 201);
+  const restrictedCourse = restrictedCourseResponse.json() as SuccessResponse<{ id: string }>;
+
+  const updateLayoutResponse = await app.inject({
+    method: 'PUT',
+    url: `/api/admin/courses/${restrictedCourse.data.id}`,
+    headers: authHeaders,
+    payload: {
+      layoutTemplate: 'studio',
+    },
+  });
+
+  assert.equal(updateLayoutResponse.statusCode, 200);
+  const updatedLayoutCourse = updateLayoutResponse.json() as SuccessResponse<{
+    layoutTemplate: string;
+    status: string;
+    accessType: string;
+    allowedStoreIds: string[];
+    excludedUserIds: string[];
+  }>;
+  assert.equal(updatedLayoutCourse.data.layoutTemplate, 'studio');
+  assert.equal(updatedLayoutCourse.data.status, 'ACTIVE');
+  assert.equal(updatedLayoutCourse.data.accessType, 'RESTRICTED');
+  assert.deepEqual(updatedLayoutCourse.data.allowedStoreIds, [UNIT_ALPHA_ID]);
+  assert.deepEqual(updatedLayoutCourse.data.excludedUserIds, [USER_ALPHA_ID]);
+
+  const invalidLayoutResponse = await app.inject({
+    method: 'PUT',
+    url: `/api/admin/courses/${restrictedCourse.data.id}`,
+    headers: authHeaders,
+    payload: {
+      layoutTemplate: 'invalid',
+    },
+  });
+
+  assert.equal(invalidLayoutResponse.statusCode, 400);
 
   const createModuleResponse = await app.inject({
     method: 'POST',
@@ -2505,10 +4039,26 @@ test('phase 3 enrollments, analytics and quiz endpoints stamp actor identity', a
       questionId: COURSE_QUESTION_ALPHA_ID,
       selectedOptionId: COURSE_OPTION_ALPHA_ID,
       isCorrect: true,
+      finalize: true,
     },
   });
 
   assert.equal(answerResponse.statusCode, 201);
+  const repeatAnswerResponse = await app.inject({
+    method: 'POST',
+    url: `/api/courses/enrollments/${enrollmentPayload.data.id}/answers`,
+    headers: userHeaders,
+    payload: {
+      questionId: COURSE_QUESTION_ALPHA_ID,
+      selectedOptionId: COURSE_OPTION_ALPHA_ID,
+      isCorrect: false,
+      finalize: true,
+    },
+  });
+
+  assert.equal(repeatAnswerResponse.statusCode, 201);
+  const repeatAnswerPayload = repeatAnswerResponse.json() as SuccessResponse<{ isCorrect: boolean }>;
+  assert.equal(repeatAnswerPayload.data.isCorrect, true);
 
   const completeResponse = await app.inject({
     method: 'POST',
@@ -2525,6 +4075,28 @@ test('phase 3 enrollments, analytics and quiz endpoints stamp actor identity', a
   const completePayload = completeResponse.json() as SuccessResponse<{ status: string; scorePercent: number }>;
   assert.equal(completePayload.data.status, 'COMPLETED');
   assert.equal(completePayload.data.scorePercent, 100);
+
+  const completedEnrollmentResponse = await app.inject({
+    method: 'GET',
+    url: `/api/courses/${COURSE_ALPHA_ID}/enrollment`,
+    headers: userHeaders,
+  });
+
+  assert.equal(completedEnrollmentResponse.statusCode, 200);
+  const completedEnrollmentPayload = completedEnrollmentResponse.json() as SuccessResponse<{ id: string; status: string } | null>;
+  assert.equal(completedEnrollmentPayload.data?.id, enrollmentPayload.data.id);
+  assert.equal(completedEnrollmentPayload.data?.status, 'COMPLETED');
+
+  const repeatEnrollResponse = await app.inject({
+    method: 'POST',
+    url: `/api/courses/${COURSE_ALPHA_ID}/enroll`,
+    headers: userHeaders,
+  });
+
+  assert.equal(repeatEnrollResponse.statusCode, 201);
+  const repeatEnrollPayload = repeatEnrollResponse.json() as SuccessResponse<{ id: string; status: string }>;
+  assert.equal(repeatEnrollPayload.data.id, enrollmentPayload.data.id);
+  assert.equal(repeatEnrollPayload.data.status, 'COMPLETED');
 
   const quizResponse = await app.inject({
     method: 'GET',
@@ -2598,6 +4170,22 @@ test('phase 3 enrollments, analytics and quiz endpoints stamp actor identity', a
   });
 
   assert.equal(resetResponse.statusCode, 200);
+
+  const reactivatedEnrollResponse = await app.inject({
+    method: 'POST',
+    url: `/api/courses/${COURSE_ALPHA_ID}/enroll`,
+    headers: userHeaders,
+  });
+
+  assert.equal(reactivatedEnrollResponse.statusCode, 201);
+  const reactivatedEnrollPayload = reactivatedEnrollResponse.json() as SuccessResponse<{
+    id: string;
+    status: string;
+    completedAt: string | null;
+  }>;
+  assert.equal(reactivatedEnrollPayload.data.id, enrollmentPayload.data.id);
+  assert.equal(reactivatedEnrollPayload.data.status, 'IN_PROGRESS');
+  assert.equal(reactivatedEnrollPayload.data.completedAt, null);
 });
 
 test('storage endpoints are authenticated and validate allowed buckets before upload', async (t) => {
@@ -2699,12 +4287,20 @@ test('super admin company and user endpoints enforce role and avoid direct tenan
       active: true,
       landingPageEnabled: true,
       checklistsEnabled: true,
+      surveysEnabled: true,
     },
   });
   assert.equal(createCompanyResponse.statusCode, 201);
-  const createCompanyPayload = createCompanyResponse.json() as SuccessResponse<{ id: string; slug: string; active: boolean }>;
+  const createCompanyPayload = createCompanyResponse.json() as SuccessResponse<{
+    id: string;
+    slug: string;
+    active: boolean;
+    features: { checklists: boolean; surveys: boolean };
+  }>;
   assert.equal(createCompanyPayload.data.slug, 'gamma-store');
   assert.equal(createCompanyPayload.data.active, true);
+  assert.equal(createCompanyPayload.data.features.checklists, true);
+  assert.equal(createCompanyPayload.data.features.surveys, true);
 
   const updateCompanyResponse = await app.inject({
     method: 'PUT',
@@ -2714,12 +4310,19 @@ test('super admin company and user endpoints enforce role and avoid direct tenan
       name: 'Gamma Store Updated',
       active: false,
       checklistsEnabled: false,
+      surveysEnabled: false,
     },
   });
   assert.equal(updateCompanyResponse.statusCode, 200);
-  const updateCompanyPayload = updateCompanyResponse.json() as SuccessResponse<{ name: string; active: boolean }>;
+  const updateCompanyPayload = updateCompanyResponse.json() as SuccessResponse<{
+    name: string;
+    active: boolean;
+    features: { checklists: boolean; surveys: boolean };
+  }>;
   assert.equal(updateCompanyPayload.data.name, 'Gamma Store Updated');
   assert.equal(updateCompanyPayload.data.active, false);
+  assert.equal(updateCompanyPayload.data.features.checklists, false);
+  assert.equal(updateCompanyPayload.data.features.surveys, false);
 
   const statusCompanyResponse = await app.inject({
     method: 'PATCH',

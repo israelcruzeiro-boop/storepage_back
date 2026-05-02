@@ -1,4 +1,5 @@
 import type { UserRole } from '../../auth/contracts/auth.types.js';
+import type { InviteActivationDeliveryView } from './invite-delivery.types.js';
 
 export const inviteStatusValues = ['PENDING_SETUP', 'ACTIVATED', 'CANCELLED', 'EXPIRED'] as const;
 
@@ -37,4 +38,5 @@ export interface InviteView {
   expiresAt: string;
   createdAt: string;
   activatedAt: string | null;
+  activationDelivery?: InviteActivationDeliveryView;
 }

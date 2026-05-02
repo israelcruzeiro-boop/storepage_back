@@ -29,6 +29,7 @@ import type {
   CourseAnswerRecord,
   CourseContentRecord,
   CourseEnrollmentRecord,
+  CourseLayoutTemplate,
   CourseModuleRecord,
   CoursePhaseQuestionRecord,
   CourseQuestionOptionRecord,
@@ -46,6 +47,7 @@ import type {
 } from '../../modules/surveys/contracts/surveys.types.js';
 import type { OrgTopLevelRecord, OrgUnitRecord } from '../../modules/structure/contracts/structure.types.js';
 import type { UserRecord, UserStatus } from '../../modules/user/contracts/user.types.js';
+import type { InviteDeliveryAttemptRecord } from '../../modules/invite/contracts/invite-delivery.types.js';
 
 export const COMPANY_SELECT =
   'id,name,slug,link_name,status,active,theme,logo_url,favicon_url,hero_image,hero_title,hero_subtitle,hero_cta_label,landing_page_enabled,landing_page_active,landing_page_layout,org_levels,org_unit_name,support_email,repositories_enabled,lms_enabled,checklists_enabled,surveys_enabled,metrics_enabled,deleted_at,created_at,updated_at';
@@ -53,6 +55,8 @@ export const USER_SELECT =
   'id,company_id,name,email,normalized_email,cpf,role,status,active,first_access,onboarding_completed,avatar_url,org_unit_id,password_hash,password_updated_at,deleted_at,created_at,updated_at';
 export const INVITE_SELECT =
   'id,company_id,name,email,normalized_email,cpf,role,org_unit_id,token,status,invited_by_user_id,user_id,expires_at,activated_at,cancelled_at,deleted_at,created_at,updated_at';
+export const INVITE_DELIVERY_ATTEMPT_SELECT =
+  'id,invite_id,company_id,channel,provider,status,error_code,requested_by_user_id,sent_at,created_at';
 export const TOP_LEVEL_SELECT =
   'id,company_id,name,level_index,parent_id,deleted_at,created_at,updated_at';
 export const UNIT_SELECT =
@@ -69,7 +73,7 @@ export const CONTENT_VIEW_SELECT = 'id,user_id,content_id,company_id,repository_
 export const CONTENT_RATING_SELECT =
   'id,user_id,content_id,company_id,repository_id,rating,org_unit_id,created_at,updated_at';
 export const COURSE_SELECT =
-  'id,company_id,title,description,thumbnail_url,cover_image,image_url,status,access_type,allowed_user_ids,allowed_region_ids,allowed_store_ids,excluded_user_ids,target_audience,passing_score,diploma_template,deleted_at,created_at,updated_at';
+  'id,company_id,title,description,thumbnail_url,cover_image,image_url,status,access_type,allowed_user_ids,allowed_region_ids,allowed_store_ids,excluded_user_ids,target_audience,passing_score,diploma_template,layout_template,deleted_at,created_at,updated_at';
 export const COURSE_MODULE_SELECT = 'id,course_id,company_id,title,order_index,deleted_at,created_at,updated_at';
 export const COURSE_CONTENT_SELECT =
   'id,company_id,module_id,title,description,type,url,content_url,file_path,size_bytes,html_content,order_index,deleted_at,created_at,updated_at';
@@ -165,6 +169,19 @@ export interface InviteRow extends JsonObject {
   deleted_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface InviteDeliveryAttemptRow extends JsonObject {
+  id: string;
+  invite_id: string;
+  company_id: string;
+  channel: InviteDeliveryAttemptRecord['channel'];
+  provider: InviteDeliveryAttemptRecord['provider'];
+  status: InviteDeliveryAttemptRecord['status'];
+  error_code: string | null;
+  requested_by_user_id: string;
+  sent_at: string | null;
+  created_at: string;
 }
 
 export interface TopLevelRow extends JsonObject {
@@ -311,6 +328,7 @@ export interface CourseRow extends JsonObject {
   target_audience: string[] | null;
   passing_score: number | null;
   diploma_template: string | null;
+  layout_template?: CourseLayoutTemplate | null;
   deleted_at: string | null;
   created_at: string;
   updated_at: string | null;
@@ -513,6 +531,10 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
+function courseLayoutTemplate(value: unknown): CourseLayoutTemplate {
+  return value === 'studio' || value === 'journey' ? value : 'focus';
+}
+
 function theme(value: unknown): CompanyTheme {
   if (!value || typeof value !== 'object') return defaultTheme;
   const record = value as JsonObject;
@@ -699,6 +721,36 @@ export function fromInviteRecord(invite: InviteRecord): Record<string, unknown> 
     deleted_at: invite.deletedAt,
     created_at: invite.createdAt,
     updated_at: invite.updatedAt,
+  };
+}
+
+export function toInviteDeliveryAttemptRecord(row: InviteDeliveryAttemptRow): InviteDeliveryAttemptRecord {
+  return {
+    id: row.id,
+    inviteId: row.invite_id,
+    companyId: row.company_id,
+    channel: row.channel,
+    provider: row.provider,
+    status: row.status,
+    errorCode: row.error_code,
+    requestedByUserId: row.requested_by_user_id,
+    sentAt: row.sent_at,
+    createdAt: row.created_at,
+  };
+}
+
+export function fromInviteDeliveryAttemptRecord(attempt: InviteDeliveryAttemptRecord): Record<string, unknown> {
+  return {
+    id: attempt.id,
+    invite_id: attempt.inviteId,
+    company_id: attempt.companyId,
+    channel: attempt.channel,
+    provider: attempt.provider,
+    status: attempt.status,
+    error_code: attempt.errorCode,
+    requested_by_user_id: attempt.requestedByUserId,
+    sent_at: attempt.sentAt,
+    created_at: attempt.createdAt,
   };
 }
 
@@ -1011,6 +1063,7 @@ export function toCourseRecord(row: CourseRow): CourseRecord {
     targetAudience: stringArray(row.target_audience),
     passingScore: row.passing_score ?? 70,
     diplomaTemplate: row.diploma_template ?? 'azul',
+    layoutTemplate: courseLayoutTemplate(row.layout_template),
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at ?? row.created_at,
@@ -1035,6 +1088,7 @@ export function fromCourseRecord(course: CourseRecord): Record<string, unknown> 
     target_audience: course.targetAudience,
     passing_score: course.passingScore,
     diploma_template: course.diplomaTemplate,
+    layout_template: course.layoutTemplate,
     deleted_at: course.deletedAt,
     created_at: course.createdAt,
     updated_at: course.updatedAt,
@@ -1303,11 +1357,16 @@ export function toQuizAttemptRecord(row: QuizAttemptRow): QuizAttemptRecord {
 /* ------------------------------------------------------------------ */
 
 export const CHECKLIST_SELECT =
-  'id,company_id,title,description,cover_image,status,access_type,allowed_user_ids,allowed_region_ids,allowed_store_ids,folder_id,deleted_at,created_at,updated_at';
+  'id,company_id,title,description,cover_image,status,access_type,allowed_user_ids,allowed_region_ids,allowed_store_ids,excluded_user_ids,folder_id,deleted_at,created_at,updated_at';
 export const CHECKLIST_FOLDER_SELECT = 'id,company_id,name,order_index,deleted_at,created_at,updated_at';
 export const CHECKLIST_SECTION_SELECT = 'id,checklist_id,title,order_index,deleted_at,created_at,updated_at';
+export type ChecklistQuestionColumnMode = 'compatible' | 'modern' | 'legacy';
 export const CHECKLIST_QUESTION_SELECT =
-  'id,section_id,question_text,question_type,required,configuration,order_index,deleted_at,created_at,updated_at';
+  'id,checklist_id,section_id,text,type,required,config,order_index,deleted_at,created_at,updated_at';
+export const CHECKLIST_QUESTION_COMPAT_SELECT =
+  'id,checklist_id,section_id,text,type,question_text,question_type,required,config,configuration,order_index,deleted_at,created_at,updated_at';
+export const CHECKLIST_QUESTION_LEGACY_SELECT =
+  'id,checklist_id,section_id,question_text,question_type,required,configuration,order_index,deleted_at,created_at,updated_at';
 export const CHECKLIST_SUBMISSION_SELECT =
   'id,checklist_id,company_id,user_id,org_unit_id,status,score,started_at,completed_at,deleted_at,created_at,updated_at';
 export const CHECKLIST_ANSWER_SELECT =
@@ -1326,6 +1385,7 @@ export interface ChecklistRow extends JsonObject {
   allowed_user_ids: unknown;
   allowed_region_ids: unknown;
   allowed_store_ids: unknown;
+  excluded_user_ids: unknown;
   folder_id: string | null;
   deleted_at: string | null;
   created_at: string;
@@ -1354,11 +1414,15 @@ export interface ChecklistSectionRow extends JsonObject {
 
 export interface ChecklistQuestionRow extends JsonObject {
   id: string;
-  section_id: string;
-  question_text: string;
-  question_type: ChecklistQuestionRecord['questionType'] | null;
+  checklist_id: string;
+  section_id: string | null;
+  text?: string | null;
+  type?: ChecklistQuestionRecord['questionType'] | null;
+  question_text?: string | null;
+  question_type?: ChecklistQuestionRecord['questionType'] | null;
   required: boolean | null;
-  configuration: unknown | null;
+  config?: unknown | null;
+  configuration?: unknown | null;
   order_index: number | null;
   deleted_at: string | null;
   created_at: string;
@@ -1425,6 +1489,7 @@ export function toChecklistRecord(row: ChecklistRow): ChecklistRecord {
     allowedUserIds: stringArray(row.allowed_user_ids),
     allowedRegionIds: stringArray(row.allowed_region_ids),
     allowedStoreIds: stringArray(row.allowed_store_ids),
+    excludedUserIds: stringArray(row.excluded_user_ids),
     folderId: row.folder_id,
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
@@ -1444,6 +1509,7 @@ export function fromChecklistRecord(c: ChecklistRecord): Record<string, unknown>
     allowed_user_ids: c.allowedUserIds,
     allowed_region_ids: c.allowedRegionIds,
     allowed_store_ids: c.allowedStoreIds,
+    excluded_user_ids: c.excludedUserIds,
     folder_id: c.folderId,
     deleted_at: c.deletedAt,
     created_at: c.createdAt,
@@ -1502,11 +1568,12 @@ export function fromChecklistSectionRecord(s: ChecklistSectionRecord): Record<st
 export function toChecklistQuestionRecord(row: ChecklistQuestionRow): ChecklistQuestionRecord {
   return {
     id: row.id,
+    checklistId: row.checklist_id,
     sectionId: row.section_id,
-    questionText: row.question_text,
-    questionType: row.question_type ?? 'YES_NO',
+    questionText: row.text ?? row.question_text ?? '',
+    questionType: row.type ?? row.question_type ?? 'COMPLIANCE',
     required: row.required ?? false,
-    configuration: row.configuration,
+    configuration: row.config ?? row.configuration ?? null,
     orderIndex: row.order_index ?? 0,
     deletedAt: row.deleted_at,
     createdAt: row.created_at,
@@ -1514,19 +1581,48 @@ export function toChecklistQuestionRecord(row: ChecklistQuestionRow): ChecklistQ
   };
 }
 
-export function fromChecklistQuestionRecord(q: ChecklistQuestionRecord): Record<string, unknown> {
-  return {
+export function fromChecklistQuestionRecord(
+  q: ChecklistQuestionRecord,
+  mode: ChecklistQuestionColumnMode = 'compatible',
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
     id: q.id,
+    checklist_id: q.checklistId,
     section_id: q.sectionId,
-    question_text: q.questionText,
-    question_type: q.questionType,
     required: q.required,
-    configuration: q.configuration,
     order_index: q.orderIndex,
     deleted_at: q.deletedAt,
     created_at: q.createdAt,
     updated_at: q.updatedAt,
   };
+  return withChecklistQuestionColumnMode(base, q, mode);
+}
+
+export function fromChecklistQuestionPatch(
+  patch: Partial<Pick<ChecklistQuestionRecord, 'sectionId' | 'questionText' | 'questionType' | 'required' | 'configuration' | 'orderIndex' | 'deletedAt' | 'updatedAt'>>,
+  mode: ChecklistQuestionColumnMode = 'compatible',
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {};
+  if ('sectionId' in patch) base.section_id = patch.sectionId;
+  if ('required' in patch) base.required = patch.required;
+  if ('orderIndex' in patch) base.order_index = patch.orderIndex;
+  if ('deletedAt' in patch) base.deleted_at = patch.deletedAt;
+  if ('updatedAt' in patch) base.updated_at = patch.updatedAt;
+  return withChecklistQuestionColumnMode(base, patch, mode);
+}
+
+function withChecklistQuestionColumnMode(
+  base: Record<string, unknown>,
+  values: Partial<Pick<ChecklistQuestionRecord, 'questionText' | 'questionType' | 'configuration'>>,
+  mode: ChecklistQuestionColumnMode,
+): Record<string, unknown> {
+  if ('questionText' in values && mode !== 'legacy') base.text = values.questionText;
+  if ('questionType' in values && mode !== 'legacy') base.type = values.questionType;
+  if ('configuration' in values && mode !== 'legacy') base.config = values.configuration;
+  if ('questionText' in values && mode !== 'modern') base.question_text = values.questionText;
+  if ('questionType' in values && mode !== 'modern') base.question_type = values.questionType;
+  if ('configuration' in values && mode !== 'modern') base.configuration = values.configuration;
+  return base;
 }
 
 export function toChecklistSubmissionRecord(row: ChecklistSubmissionRow): ChecklistSubmissionRecord {

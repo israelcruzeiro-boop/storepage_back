@@ -3,6 +3,7 @@ import { InMemoryAuthSessionRepository } from '../repositories/memory/in-memory-
 import { InMemoryChecklistsRepository } from '../repositories/memory/in-memory-checklists.repository.js';
 import { InMemoryCompanyRepository } from '../repositories/memory/in-memory-company.repository.js';
 import { InMemoryContentRepository } from '../repositories/memory/in-memory-content.repository.js';
+import { InMemoryInviteDeliveryAttemptRepository } from '../repositories/memory/in-memory-invite-delivery-attempt.repository.js';
 import { InMemoryInviteRepository } from '../repositories/memory/in-memory-invite.repository.js';
 import { InMemoryLegacyRpcRepository } from '../repositories/memory/in-memory-legacy-rpc.repository.js';
 import { InMemoryLmsRepository } from '../repositories/memory/in-memory-lms.repository.js';
@@ -15,6 +16,7 @@ import { SupabaseAuthSessionRepository } from '../repositories/supabase/supabase
 import { SupabaseChecklistsRepository } from '../repositories/supabase/supabase-checklists.repository.js';
 import { SupabaseCompanyRepository } from '../repositories/supabase/supabase-company.repository.js';
 import { SupabaseContentRepository } from '../repositories/supabase/supabase-content.repository.js';
+import { SupabaseInviteDeliveryAttemptRepository } from '../repositories/supabase/supabase-invite-delivery-attempt.repository.js';
 import { SupabaseInviteRepository } from '../repositories/supabase/supabase-invite.repository.js';
 import { SupabaseLegacyRpcRepository } from '../repositories/supabase/supabase-legacy-rpc.repository.js';
 import { SupabaseLmsRepository } from '../repositories/supabase/supabase-lms.repository.js';
@@ -26,6 +28,7 @@ import type { AuthSessionRepository } from '../repositories/contracts/auth-sessi
 import type { ChecklistsRepository } from '../repositories/contracts/checklists.repository.js';
 import type { CompanyRepository } from '../repositories/contracts/company.repository.js';
 import type { ContentRepository } from '../repositories/contracts/content.repository.js';
+import type { InviteDeliveryAttemptRepository } from '../repositories/contracts/invite-delivery-attempt.repository.js';
 import type { InviteRepository } from '../repositories/contracts/invite.repository.js';
 import type { LegacyRpcRepository } from '../repositories/contracts/legacy-rpc.repository.js';
 import type { LmsRepository } from '../repositories/contracts/lms.repository.js';
@@ -39,6 +42,7 @@ import { AuthenticationService } from '../services/authentication.service.js';
 import { ChecklistsService } from '../services/checklists.service.js';
 import { CompanyService } from '../services/company.service.js';
 import { ContentLibraryService } from '../services/content-library.service.js';
+import { InviteDeliveryService, type InviteDeliveryProvider } from '../services/invite-delivery.service.js';
 import { LmsService } from '../services/lms.service.js';
 import { OrganizationService } from '../services/organization.service.js';
 import { SessionJwtService } from '../services/session-jwt.service.js';
@@ -47,7 +51,9 @@ import { SuperAdminService } from '../services/super-admin.service.js';
 import { SurveysService } from '../services/surveys.service.js';
 import { SystemService } from '../services/system.service.js';
 import { UserRewardsService } from '../services/user-rewards.service.js';
+import { UserDirectoryService } from '../services/user-directory.service.js';
 import { PasswordService } from './passwords.js';
+import { RestrictedAccessEvaluator } from './restricted-access.js';
 
 export interface AppRepositories {
   runtime: RuntimeRepository;
@@ -55,6 +61,7 @@ export interface AppRepositories {
   tenant: TenantRepository;
   user: UserRepository;
   invite: InviteRepository;
+  inviteDeliveryAttempt: InviteDeliveryAttemptRepository;
   content: ContentRepository;
   lms: LmsRepository;
   structure: StructureRepository;
@@ -76,6 +83,7 @@ export interface AppServices {
   lms: LmsService;
   storage: StorageService;
   userRewards: UserRewardsService;
+  userDirectory: UserDirectoryService;
   surveys: SurveysService;
   checklists: ChecklistsService;
   superAdmin: SuperAdminService;
@@ -88,6 +96,7 @@ export interface AppContainer {
 
 export interface BuildAppContainerOptions {
   seed?: InMemoryStoreSeed;
+  inviteDeliveryProvider?: InviteDeliveryProvider;
 }
 
 function buildRepositories(env: AppEnv, options: BuildAppContainerOptions): AppRepositories {
@@ -107,6 +116,7 @@ function buildRepositories(env: AppEnv, options: BuildAppContainerOptions): AppR
       tenant: companyRepository,
       user: new SupabaseUserRepository(client),
       invite: new SupabaseInviteRepository(client),
+      inviteDeliveryAttempt: new SupabaseInviteDeliveryAttemptRepository(client),
       content: new SupabaseContentRepository(client),
       lms: new SupabaseLmsRepository(client),
       structure: new SupabaseStructureRepository(client),
@@ -126,6 +136,7 @@ function buildRepositories(env: AppEnv, options: BuildAppContainerOptions): AppR
     tenant: companyRepository,
     user: new InMemoryUserRepository(store),
     invite: new InMemoryInviteRepository(store),
+    inviteDeliveryAttempt: new InMemoryInviteDeliveryAttemptRepository(store),
     content: new InMemoryContentRepository(store),
     lms: new InMemoryLmsRepository(store),
     structure: new InMemoryStructureRepository(store),
@@ -141,6 +152,7 @@ export function buildAppContainer(env: AppEnv, options: BuildAppContainerOptions
   const companyRepository = repositories.company;
   const userRepository = repositories.user;
   const inviteRepository = repositories.invite;
+  const inviteDeliveryAttemptRepository = repositories.inviteDeliveryAttempt;
   const contentRepository = repositories.content;
   const checklistsRepository = repositories.checklists;
   const surveysRepository = repositories.surveys;
@@ -150,8 +162,18 @@ export function buildAppContainer(env: AppEnv, options: BuildAppContainerOptions
   const legacyRpcRepository = repositories.legacyRpc;
   const passwordService = new PasswordService();
   const sessionJwtService = new SessionJwtService(env);
-  const companyService = new CompanyService(companyRepository, env.PUBLIC_TENANT_CACHE_TTL_SECONDS * 1000);
+  const companyService = new CompanyService(
+    companyRepository,
+    structureRepository,
+    env.PUBLIC_TENANT_CACHE_TTL_SECONDS * 1000,
+  );
+  const inviteDeliveryService = new InviteDeliveryService(
+    env,
+    inviteDeliveryAttemptRepository,
+    options.inviteDeliveryProvider,
+  );
   const organizationService = new OrganizationService(companyRepository, structureRepository, userRepository);
+  const restrictedAccess = new RestrictedAccessEvaluator(userRepository, structureRepository);
 
   const services: AppServices = {
     system: new SystemService(env, repositories.runtime),
@@ -167,15 +189,29 @@ export function buildAppContainer(env: AppEnv, options: BuildAppContainerOptions
       passwordService,
       sessionJwtService,
     ),
-    adminUsers: new AdminUsersService(userRepository, inviteRepository, structureRepository, authSessionRepository),
+    adminUsers: new AdminUsersService(
+      userRepository,
+      inviteRepository,
+      structureRepository,
+      authSessionRepository,
+      inviteDeliveryService,
+      passwordService,
+    ),
     organization: organizationService,
-    contentLibrary: new ContentLibraryService(companyRepository, contentRepository),
-    lms: new LmsService(lmsRepository),
+    contentLibrary: new ContentLibraryService(companyRepository, contentRepository, restrictedAccess),
+    lms: new LmsService(lmsRepository, restrictedAccess),
     storage: new StorageService(env),
     userRewards: new UserRewardsService(legacyRpcRepository),
-    surveys: new SurveysService(surveysRepository, userRepository, structureRepository),
-    checklists: new ChecklistsService(checklistsRepository),
-    superAdmin: new SuperAdminService(companyRepository, userRepository, inviteRepository, authSessionRepository, legacyRpcRepository),
+    userDirectory: new UserDirectoryService(userRepository, checklistsRepository),
+    surveys: new SurveysService(surveysRepository, userRepository, structureRepository, restrictedAccess),
+    checklists: new ChecklistsService(checklistsRepository, restrictedAccess),
+    superAdmin: new SuperAdminService(
+      companyRepository,
+      userRepository,
+      inviteRepository,
+      authSessionRepository,
+      passwordService,
+    ),
   };
 
   return {

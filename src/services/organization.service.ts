@@ -145,7 +145,8 @@ export class OrganizationService {
   }
 
   public async createUnit(companyId: string, input: UnitInput) {
-    await this.assertTopLevelExists(companyId, input.topLevelId ?? null);
+    const company = await this.getCompany(companyId);
+    await this.assertValidUnitTopLevel(companyId, company.general.orgLevels.length, input.topLevelId ?? null);
 
     const now = new Date().toISOString();
     const unit = {
@@ -171,7 +172,8 @@ export class OrganizationService {
     }
 
     const nextTopLevelId = input.topLevelId === undefined ? unit.topLevelId : input.topLevelId;
-    await this.assertTopLevelExists(companyId, nextTopLevelId);
+    const company = await this.getCompany(companyId);
+    await this.assertValidUnitTopLevel(companyId, company.general.orgLevels.length, nextTopLevelId);
 
     const updatedUnit = {
       ...unit,
@@ -227,15 +229,27 @@ export class OrganizationService {
     }
   }
 
-  private async assertTopLevelExists(companyId: string, topLevelId: string | null): Promise<void> {
-    if (!topLevelId) {
+  private async assertValidUnitTopLevel(companyId: string, configuredLevels: number, topLevelId: string | null): Promise<void> {
+    if (configuredLevels === 0) {
+      if (topLevelId) {
+        throw new AppError(400, 'BAD_REQUEST', 'Organizational unit cannot reference a top-level node when no hierarchy level is configured.');
+      }
+
       return;
+    }
+
+    if (!topLevelId) {
+      throw new AppError(400, 'BAD_REQUEST', 'Organizational unit must reference the last configured hierarchy level.');
     }
 
     const topLevel = await this.structureRepository.findTopLevelById(companyId, topLevelId);
 
     if (!topLevel) {
       throw new AppError(400, 'BAD_REQUEST', 'Referenced top-level node was not found.');
+    }
+
+    if (topLevel.levelIndex !== configuredLevels) {
+      throw new AppError(400, 'BAD_REQUEST', 'Organizational unit must reference the last configured hierarchy level.');
     }
   }
 

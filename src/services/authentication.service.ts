@@ -67,6 +67,7 @@ export class AuthenticationService {
         role: user.role,
         name: user.name,
         email: user.email,
+        firstAccess: user.firstAccess,
         sessionId: tokenIdentity.sessionId,
       },
       token: this.buildTokenMetadata(verifiedToken.payload, tokenIdentity.sessionId, tokenIdentity.tokenUse),

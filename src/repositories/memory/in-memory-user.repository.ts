@@ -35,6 +35,11 @@ export class InMemoryUserRepository implements UserRepository {
     return this.store.getUser(userId);
   }
 
+  public async findAnyByEmail(normalizedEmail: string): Promise<UserRecord | null> {
+    const email = normalizeEmail(normalizedEmail);
+    return this.store.listUsers().find((user) => isVisible(user) && user.normalizedEmail === email) ?? null;
+  }
+
   public async findByEmail(companyId: string, normalizedEmail: string): Promise<UserRecord | null> {
     return (
       this.store

@@ -36,6 +36,7 @@ export interface ChecklistRecord {
   allowedUserIds: string[];
   allowedRegionIds: string[];
   allowedStoreIds: string[];
+  excludedUserIds: string[];
   folderId: string | null;
   deletedAt: string | null;
   createdAt: string;
@@ -64,7 +65,8 @@ export interface ChecklistSectionRecord {
 
 export interface ChecklistQuestionRecord {
   id: string;
-  sectionId: string;
+  checklistId: string;
+  sectionId: string | null;
   questionText: string;
   questionType: ChecklistQuestionType;
   required: boolean;

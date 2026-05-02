@@ -8,6 +8,7 @@ import type {
   RepositoryRecord,
   SimpleLinkRecord,
 } from '../../modules/content/contracts/content.types.js';
+import type { InviteDeliveryAttemptRecord } from '../../modules/invite/contracts/invite-delivery.types.js';
 import type { InviteRecord } from '../../modules/invite/contracts/invite.types.js';
 import type {
   ActionPlanRecord,
@@ -44,6 +45,7 @@ export interface InMemoryStoreSeed {
   companies?: CompanyRecord[];
   users?: UserRecord[];
   invites?: InviteRecord[];
+  inviteDeliveryAttempts?: InviteDeliveryAttemptRecord[];
   topLevels?: OrgTopLevelRecord[];
   units?: OrgUnitRecord[];
   sessions?: AuthSessionRecord[];
@@ -100,6 +102,7 @@ export class InMemoryStore {
   private readonly companies = new Map<string, CompanyRecord>();
   private readonly users = new Map<string, UserRecord>();
   private readonly invites = new Map<string, InviteRecord>();
+  private readonly inviteDeliveryAttempts = new Map<string, InviteDeliveryAttemptRecord>();
   private readonly topLevels = new Map<string, OrgTopLevelRecord>();
   private readonly units = new Map<string, OrgUnitRecord>();
   private readonly sessions = new Map<string, AuthSessionRecord>();
@@ -136,6 +139,7 @@ export class InMemoryStore {
     seed.companies?.forEach((company) => { setClone(this.companies, company); });
     seed.users?.forEach((user) => { setClone(this.users, user); });
     seed.invites?.forEach((invite) => { setClone(this.invites, invite); });
+    seed.inviteDeliveryAttempts?.forEach((attempt) => { setClone(this.inviteDeliveryAttempts, attempt); });
     seed.topLevels?.forEach((topLevel) => { setClone(this.topLevels, topLevel); });
     seed.units?.forEach((unit) => { setClone(this.units, unit); });
     seed.sessions?.forEach((session) => { setClone(this.sessions, session); });
@@ -203,6 +207,14 @@ export class InMemoryStore {
 
   public setInvite(invite: InviteRecord): InviteRecord {
     return setClone(this.invites, invite);
+  }
+
+  public listInviteDeliveryAttempts(): InviteDeliveryAttemptRecord[] {
+    return listClones(this.inviteDeliveryAttempts);
+  }
+
+  public setInviteDeliveryAttempt(attempt: InviteDeliveryAttemptRecord): InviteDeliveryAttemptRecord {
+    return setClone(this.inviteDeliveryAttempts, attempt);
   }
 
   public listTopLevels(): OrgTopLevelRecord[] {

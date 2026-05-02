@@ -56,6 +56,7 @@ Backend desacoplado da plataforma StorePage.
   - `20260427_add_users_onboarding_completed.sql`
   - `20260427_phase5_surveys_adapter.sql`
   - `20260428_phase7_production_adapter_compat.sql`
+  - `20260430_invite_delivery_attempts.sql`
 - Services e rotas continuam falando apenas com os contratos em `src/repositories/contracts`.
 - A chave Supabase usada pelo backend deve ser `SUPABASE_SERVICE_ROLE_KEY` somente em ambiente server-side.
 - Uploads passam por `POST /api/storage/upload`; o frontend nao precisa de acesso direto ao Supabase Storage.
@@ -136,8 +137,22 @@ Use `.env.example` como base.
 ### Cache publico
 - `PUBLIC_TENANT_CACHE_TTL_SECONDS`
 
+### Delivery de convites
+- `INVITE_DELIVERY_PROVIDER` (`noop` ou `smtp`)
+- `INVITE_ACTIVATION_BASE_URL`
+- `INVITE_DELIVERY_FROM`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_SECURE`
+
 ## Observacoes operacionais
 - `JWT_AUTH_MODE=shared-secret` e o modo que suporta emissao de tokens de sessao da API nesta fase.
 - `JWT_AUTH_MODE=jwks` continua suportando verificacao de tokens, mas login/refresh da propria API dependem do modo com segredo simetrico ate a estrategia final de emissao ser definida.
+- Em `NODE_ENV=production`, a validacao de ambiente falha se `JWT_AUTH_MODE=disabled`, se `CORS_ALLOW_CREDENTIALS=false` ou se `CORS_ORIGINS=*`. Auth por cookie HttpOnly exige credentials habilitado e origem explicita do frontend.
+- Em producao, use `JWT_AUTH_MODE=shared-secret` com `JWT_SHARED_SECRET` forte fora do git, ou `JWT_AUTH_MODE=jwks` com `JWT_JWKS_URL` HTTPS valido. Nunca versionar `.env`, `.env.production`, service role, segredos JWT ou cookies.
+- Em producao, `INVITE_DELIVERY_PROVIDER` deve ser `smtp`, `INVITE_ACTIVATION_BASE_URL` deve ser HTTPS e os segredos SMTP devem ficar fora do git. O backend monta o link de ativacao e entrega somente ao provider; o payload admin nunca recebe token ou link.
+- Tentativas de envio/reenvio de convite ficam auditadas em `invite_delivery_attempts` sem token, link ou segredo SMTP.
 - O adapter Supabase usa PostgREST via `fetch`, com filtros por `company_id` nos repositories tenant-scoped e sem expor secrets ao frontend.
 - O storage server-side usa a API Supabase Storage com service role. Configure buckets publicos/permitidos em `SUPABASE_STORAGE_ALLOWED_BUCKETS`; os paths novos sao prefixados por `companies/{companyId}` para preservar isolamento de tenant.

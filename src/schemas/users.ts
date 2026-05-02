@@ -46,3 +46,20 @@ export const selfProfileUpdateBodySchema = z
   .refine((value) => Object.values(value).some((entry) => entry !== undefined), {
     message: 'At least one profile field must be provided.',
   });
+
+export const visibleUsersQuerySchema = z.object({
+  ids: z
+    .string()
+    .trim()
+    .max(8192)
+    .optional()
+    .transform((value) => {
+      if (!value) return undefined;
+      const ids = value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return ids.length > 0 ? ids : undefined;
+    })
+    .pipe(z.array(entityIdSchema).max(200).optional()),
+});

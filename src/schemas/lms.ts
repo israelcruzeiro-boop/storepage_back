@@ -2,9 +2,11 @@ import { z } from 'zod';
 import {
   courseAccessTypeValues,
   courseContentTypeValues,
+  courseLayoutTemplateValues,
   courseQuestionTypeValues,
   courseStatusValues,
 } from '../modules/lms/contracts/lms.types.js';
+import { restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 export const courseIdParamsSchema = z.object({ id: z.string().uuid() });
 export const moduleIdParamsSchema = z.object({ id: z.string().uuid() });
@@ -16,7 +18,7 @@ export const quizIdParamsSchema = z.object({ id: z.string().uuid() });
 const nullableStringSchema = z.string().trim().nullable().optional();
 const idArraySchema = z.array(z.string().uuid()).default([]);
 
-export const createCourseBodySchema = z.object({
+const courseBodySchema = z.object({
   title: z.string().trim().min(2),
   description: z.string().trim().optional().default(''),
   thumbnailUrl: nullableStringSchema,
@@ -31,9 +33,34 @@ export const createCourseBodySchema = z.object({
   targetAudience: z.array(z.string()).default([]),
   passingScore: z.number().int().min(0).max(100).default(70),
   diplomaTemplate: z.string().trim().default('azul'),
+  layoutTemplate: z.enum(courseLayoutTemplateValues).default('focus'),
 });
 
-export const updateCourseBodySchema = createCourseBodySchema.partial();
+export const createCourseBodySchema = courseBodySchema.refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
+
+export const updateCourseBodySchema = z.object({
+  title: z.string().trim().min(2).optional(),
+  description: z.string().trim().optional(),
+  thumbnailUrl: nullableStringSchema,
+  coverImage: nullableStringSchema,
+  imageUrl: nullableStringSchema,
+  status: z.enum(courseStatusValues).optional(),
+  accessType: z.enum(courseAccessTypeValues).optional(),
+  allowedUserIds: z.array(z.string().uuid()).optional(),
+  allowedRegionIds: z.array(z.string().uuid()).optional(),
+  allowedStoreIds: z.array(z.string().uuid()).optional(),
+  excludedUserIds: z.array(z.string().uuid()).optional(),
+  targetAudience: z.array(z.string()).optional(),
+  passingScore: z.number().int().min(0).max(100).optional(),
+  diplomaTemplate: z.string().trim().optional(),
+  layoutTemplate: z.enum(courseLayoutTemplateValues).optional(),
+}).refine(
+  (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
+  { message: restrictedAccessTargetMessage },
+);
 
 export const createModuleBodySchema = z.object({
   title: z.string().trim().min(1),
@@ -85,12 +112,13 @@ export const submitCourseAnswerBodySchema = z.object({
   selectedOptionId: z.string().uuid().nullable().optional(),
   complexAnswer: z.unknown().nullable().optional(),
   isCorrect: z.boolean(),
+  finalize: z.boolean().optional().default(false),
 });
 
 export const completeEnrollmentBodySchema = z.object({
   totalCorrect: z.number().int().min(0),
   totalQuestions: z.number().int().min(0),
-  startedAt: z.string().datetime().optional(),
+  startedAt: z.string().optional(),
 });
 
 export const resetEnrollmentBodySchema = z.object({

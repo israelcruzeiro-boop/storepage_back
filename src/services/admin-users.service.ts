@@ -1,6 +1,7 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
 import { normalizeCpf, normalizeEmail } from '../lib/normalization.js';
+import { TEMPORARY_INITIAL_PASSWORD } from '../lib/password-policy.js';
 import { toInviteView, toUserView } from '../lib/dto-mappers.js';
 import type { AuthenticatedActor, UserRole } from '../modules/auth/contracts/auth.types.js';
 import type { InviteRecord } from '../modules/invite/contracts/invite.types.js';
@@ -9,6 +10,8 @@ import type { AuthSessionRepository } from '../repositories/contracts/auth-sessi
 import type { InviteRepository } from '../repositories/contracts/invite.repository.js';
 import type { StructureRepository } from '../repositories/contracts/structure.repository.js';
 import type { UserRepository } from '../repositories/contracts/user.repository.js';
+import type { PasswordService } from '../lib/passwords.js';
+import type { InviteDeliveryService } from './invite-delivery.service.js';
 
 interface AdminUsersFilters {
   page: number;
@@ -42,6 +45,8 @@ export class AdminUsersService {
     private readonly inviteRepository: InviteRepository,
     private readonly structureRepository: StructureRepository,
     private readonly authSessionRepository: AuthSessionRepository,
+    private readonly inviteDeliveryService: InviteDeliveryService,
+    private readonly passwordService: PasswordService,
   ) {}
 
   public async listUsers(actor: AuthenticatedActor, filters: AdminUsersFilters) {
@@ -54,9 +59,17 @@ export class AdminUsersService {
       }),
     ]);
 
+    const activationDeliveries = await this.inviteDeliveryService.getActivationDeliveries(
+      actor.companyId,
+      invitesResult.items.map((invite) => invite.id),
+    );
+
     return {
       users: usersResult.items.map(toUserView),
-      invites: invitesResult.items.map(toInviteView),
+      invites: invitesResult.items.map((invite) => ({
+        ...toInviteView(invite),
+        activationDelivery: activationDeliveries.get(invite.id),
+      })),
       meta: {
         page: filters.page,
         limit: filters.limit,
@@ -84,40 +97,70 @@ export class AdminUsersService {
   }
 
   public async createInvite(actor: AuthenticatedActor, input: CreateInviteInput) {
-    this.assertManageableRole(actor.role, input.role);
+    this.assertManageableRole(input.role);
     await this.assertOrgUnit(actor.companyId, input.orgUnitId ?? null);
 
     const normalizedEmail = normalizeEmail(input.email);
     const normalizedCpf = normalizeCpf(input.cpf);
-    await this.assertIdentityAvailable(actor.companyId, normalizedEmail, normalizedCpf, null);
+    const existingUser = await this.userRepository.findByEmail(actor.companyId, normalizedEmail);
 
-    const now = new Date();
-    const invite: InviteRecord = {
+    if (existingUser) {
+      throw new AppError(409, 'CONFLICT', 'Another user already uses this email in the tenant.');
+    }
+
+    if (normalizedCpf) {
+      const userByCpf = await this.userRepository.findByCpf(actor.companyId, normalizedCpf);
+
+      if (userByCpf) {
+        throw new AppError(409, 'CONFLICT', 'Another user already uses this CPF in the tenant.');
+      }
+    }
+
+    const now = new Date().toISOString();
+    await this.cancelPendingInvite(actor.companyId, normalizedEmail, now);
+
+    const user: UserRecord = {
       id: randomUUID(),
       companyId: actor.companyId,
-      name: input.name,
+      name: input.name.trim(),
       email: normalizedEmail,
       normalizedEmail,
       cpf: normalizedCpf,
       role: input.role,
       orgUnitId: input.orgUnitId ?? null,
-      token: randomBytes(24).toString('base64url'),
-      status: 'PENDING_SETUP',
-      invitedByUserId: actor.userId,
-      userId: null,
-      expiresAt: new Date(now.getTime() + 7 * 24 * 60 * 60_000).toISOString(),
-      activatedAt: null,
-      cancelledAt: null,
+      status: 'ACTIVE',
+      active: true,
+      firstAccess: true,
+      onboardingCompleted: false,
+      avatarUrl: null,
+      passwordHash: await this.passwordService.hashPassword(TEMPORARY_INITIAL_PASSWORD),
+      passwordUpdatedAt: null,
       deletedAt: null,
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
+      createdAt: now,
+      updatedAt: now,
     };
 
-    await this.inviteRepository.save(invite);
+    const savedUser = await this.userRepository.save(user);
+
+    return {
+      user: toUserView(savedUser),
+    };
+  }
+
+  public async resendInvite(actor: AuthenticatedActor, inviteId: string) {
+    const invite = await this.inviteRepository.findById(actor.companyId, inviteId);
+
+    if (!invite) {
+      throw new AppError(404, 'NOT_FOUND', 'Invite not found.');
+    }
+
+    this.assertInviteCanBeDelivered(invite);
+
+    const activationDelivery = await this.inviteDeliveryService.sendInviteActivation(invite, actor.userId);
 
     return {
       invite: toInviteView(invite),
-      activationToken: invite.token,
+      activationDelivery,
     };
   }
 
@@ -128,9 +171,9 @@ export class AdminUsersService {
       throw new AppError(404, 'NOT_FOUND', 'User not found.');
     }
 
-    this.assertManageableRole(actor.role, user.role);
+    this.assertManageableRole(user.role);
     if (input.role) {
-      this.assertManageableRole(actor.role, input.role);
+      this.assertManageableRole(input.role);
     }
 
     if (
@@ -193,7 +236,7 @@ export class AdminUsersService {
       throw new AppError(404, 'NOT_FOUND', 'User not found.');
     }
 
-    this.assertManageableRole(actor.role, user.role);
+    this.assertManageableRole(user.role);
 
     if (actor.userId === user.id) {
       throw new AppError(409, 'SELF_MODIFICATION_FORBIDDEN', 'The current administrator cannot delete their own account.');
@@ -238,9 +281,36 @@ export class AdminUsersService {
     };
   }
 
-  private assertManageableRole(actorRole: UserRole, targetRole: UserRole): void {
-    if (targetRole === 'SUPER_ADMIN' && actorRole !== 'SUPER_ADMIN') {
-      throw new AppError(403, 'ROLE_ESCALATION_FORBIDDEN', 'Only a super admin can manage super admin users.');
+  private async cancelPendingInvite(companyId: string, normalizedEmail: string, cancelledAt: string): Promise<void> {
+    const pendingInvite = await this.inviteRepository.findPendingByEmail(companyId, normalizedEmail);
+
+    if (!pendingInvite) {
+      return;
+    }
+
+    await this.inviteRepository.save({
+      ...pendingInvite,
+      status: 'CANCELLED',
+      cancelledAt,
+      deletedAt: cancelledAt,
+      updatedAt: cancelledAt,
+    });
+  }
+
+  private assertInviteCanBeDelivered(invite: InviteRecord): void {
+    if (invite.status !== 'PENDING_SETUP' || invite.cancelledAt || invite.activatedAt || invite.userId) {
+      throw new AppError(409, 'INVITE_NOT_PENDING', 'Only pending invites can be delivered.');
+    }
+
+    const expiresAt = new Date(invite.expiresAt).getTime();
+    if (Number.isNaN(expiresAt) || expiresAt <= Date.now()) {
+      throw new AppError(410, 'INVITE_EXPIRED', 'Expired invites cannot be delivered.');
+    }
+  }
+
+  private assertManageableRole(targetRole: UserRole): void {
+    if (targetRole === 'SUPER_ADMIN') {
+      throw new AppError(403, 'ROLE_ESCALATION_FORBIDDEN', 'Super admin users cannot be managed through tenant user endpoints.');
     }
   }
 

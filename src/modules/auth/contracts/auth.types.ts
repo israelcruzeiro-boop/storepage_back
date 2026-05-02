@@ -11,6 +11,7 @@ export interface AuthenticatedActor {
   role: UserRole;
   name: string;
   email?: string;
+  firstAccess: boolean;
   sessionId: string | null;
 }
 

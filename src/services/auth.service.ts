@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
 import { buildIdentifierLookup, normalizeCpf, normalizeEmail } from '../lib/normalization.js';
+import { assertNewPasswordAllowed } from '../lib/password-policy.js';
 import { toInviteView, toUnitView, toUserView } from '../lib/dto-mappers.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type { AuthSessionRecord, SessionTokenBundle, SessionView } from '../modules/auth/contracts/session.types.js';
@@ -167,6 +168,7 @@ export class AuthService {
 
   public async activateInvite(token: string, input: ActivateInviteInput): Promise<SessionResponse> {
     const invite = await this.getActiveInvite(token);
+    assertNewPasswordAllowed(input.password);
     const normalizedEmail = normalizeEmail(input.email);
     const normalizedCpf = normalizeCpf(input.cpf) ?? invite.cpf;
 
@@ -300,6 +302,7 @@ export class AuthService {
 
   public async updatePassword(actor: AuthenticatedActor, input: UpdatePasswordInput) {
     const user = await this.getCurrentUser(actor);
+    assertNewPasswordAllowed(input.newPassword);
     const passwordMatches = await this.passwordService.verifyPassword(input.currentPassword, user.passwordHash);
 
     if (!passwordMatches) {
@@ -315,6 +318,7 @@ export class AuthService {
       ...user,
       passwordHash: await this.passwordService.hashPassword(input.newPassword),
       passwordUpdatedAt: updatedAt,
+      firstAccess: false,
       updatedAt,
     });
 
@@ -464,7 +468,7 @@ export class AuthService {
       throw new AppError(403, 'FORBIDDEN', 'This tenant is not available for authentication.');
     }
 
-    if (!user.passwordHash || user.status === 'PENDING_SETUP' || user.firstAccess) {
+    if (!user.passwordHash || user.status === 'PENDING_SETUP') {
       throw new AppError(
         409,
         'INVITE_PENDING_ACTIVATION',

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AppError } from '../lib/errors.js';
+import type { RestrictedAccessEvaluator } from '../lib/restricted-access.js';
 import type { AuthenticatedActor } from '../modules/auth/contracts/auth.types.js';
 import type {
   SurveyQuestionRecord,
@@ -49,17 +50,80 @@ export interface SurveyQuestionInput {
 
 export type SurveyQuestionUpdateInput = Partial<SurveyQuestionInput>;
 
+type SurveyQuestionConfiguration = Record<string, unknown>;
+type SurveyAnswerValue = Record<string, unknown>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function getString(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function getNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function normalizeSurveyQuestionConfiguration(
+  questionType: SurveyQuestionRecord['questionType'],
+  configuration: unknown,
+): SurveyQuestionConfiguration {
+  const base = isRecord(configuration) ? { ...configuration } : {};
+  if (base.type !== questionType) {
+    base.type = questionType;
+  }
+
+  if (questionType === 'SINGLE_CHOICE' || questionType === 'MULTIPLE_CHOICE') {
+    const options = Array.isArray(base.options) ? base.options : [];
+    const normalizedOptions = options
+      .filter(isRecord)
+      .map((option) => ({
+        id: getString(option.id)?.trim() ?? '',
+        label: getString(option.label)?.trim() ?? '',
+      }))
+      .filter((option) => option.id.length > 0 && option.label.length > 0);
+
+    if (normalizedOptions.length < 2) {
+      throw new AppError(400, 'BAD_REQUEST', 'Choice questions require at least two valid options.');
+    }
+
+    base.options = normalizedOptions;
+    base.allow_other = typeof base.allow_other === 'boolean' ? base.allow_other : false;
+  }
+
+  if (questionType === 'RATING') {
+    const max = getNumber(base.max ?? base.max_stars) ?? 5;
+    if (!Number.isInteger(max) || max < 3 || max > 10) {
+      throw new AppError(400, 'BAD_REQUEST', 'Rating questions require a max value between 3 and 10.');
+    }
+    base.max = max;
+    delete base.max_stars;
+  }
+
+  if (questionType === 'NUMBER') {
+    const min = getNumber(base.min);
+    const max = getNumber(base.max);
+    if (min !== null && max !== null && min > max) {
+      throw new AppError(400, 'BAD_REQUEST', 'Number question min cannot be greater than max.');
+    }
+  }
+
+  return base;
+}
+
 export class SurveysService {
   public constructor(
     private readonly repository: SurveysRepository,
     private readonly users: UserRepository,
     private readonly structure: StructureRepository,
+    private readonly access: RestrictedAccessEvaluator,
   ) {}
 
   public async listSurveys(actor: AuthenticatedActor) {
     const surveys = await this.repository.listSurveys(actor.companyId);
-    return Promise.all(surveys
-      .filter((survey) => this.canReadSurvey(actor, survey))
+    const readableSurveys = await this.access.filterReadable(actor, surveys);
+    return Promise.all(readableSurveys
       .map(async (survey) => ({
         ...this.toSurveyView(survey),
         questionCount: (await this.repository.listQuestions(survey.id)).length,
@@ -104,6 +168,9 @@ export class SurveysService {
     }
 
     const survey = await this.getReadableSurvey(actor, command.surveyId);
+    const questions = await this.repository.listQuestions(survey.id);
+    this.assertValidResponseAnswers(questions, command.answers);
+
     if (!survey.allowMultipleResponses) {
       const existing = await this.repository.listResponses(actor.companyId, {
         surveyId: command.surveyId,
@@ -167,6 +234,7 @@ export class SurveysService {
       createdAt: now,
       updatedAt: now,
     };
+    await this.access.assertValidAccessTarget(actor.companyId, survey);
     return this.toSurveyView(await this.repository.saveSurvey(survey));
   }
 
@@ -189,6 +257,7 @@ export class SurveysService {
       coverImage: input.coverImage === undefined ? survey.coverImage : input.coverImage ?? null,
       updatedAt: new Date().toISOString(),
     };
+    await this.access.assertValidAccessTarget(actor.companyId, next);
     return this.toSurveyView(await this.repository.saveSurvey(next));
   }
 
@@ -208,7 +277,7 @@ export class SurveysService {
       questionText: input.questionText,
       description: input.description ?? null,
       questionType: input.questionType,
-      configuration: input.configuration,
+      configuration: normalizeSurveyQuestionConfiguration(input.questionType, input.configuration),
       required: input.required ?? true,
       orderIndex: input.orderIndex ?? 0,
       deletedAt: null,
@@ -220,12 +289,16 @@ export class SurveysService {
 
   public async updateQuestion(actor: AuthenticatedActor, questionId: string, input: SurveyQuestionUpdateInput) {
     const question = await this.getTenantQuestion(actor.companyId, questionId);
+    const questionType = input.questionType ?? question.questionType;
     const next: SurveyQuestionRecord = {
       ...question,
       questionText: input.questionText ?? question.questionText,
       description: input.description === undefined ? question.description : input.description ?? null,
-      questionType: input.questionType ?? question.questionType,
-      configuration: input.configuration === undefined ? question.configuration : input.configuration,
+      questionType,
+      configuration: normalizeSurveyQuestionConfiguration(
+        questionType,
+        input.configuration === undefined ? question.configuration : input.configuration,
+      ),
       required: input.required ?? question.required,
       orderIndex: input.orderIndex ?? question.orderIndex,
       updatedAt: new Date().toISOString(),
@@ -264,16 +337,158 @@ export class SurveysService {
     return { updated: results.length, questions: results };
   }
 
-  private canReadSurvey(actor: AuthenticatedActor, survey: SurveyRecord): boolean {
-    if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return true;
-    if (survey.status !== 'ACTIVE') return false;
-    if (survey.accessType === 'ALL') return true;
-    return survey.allowedUserIds.length === 0 || survey.allowedUserIds.includes(actor.userId);
+  private assertValidResponseAnswers(
+    questions: readonly SurveyQuestionRecord[],
+    answers: readonly SubmitSurveyAnswerInput[],
+  ): void {
+    const questionById = new Map(questions.map((question) => [question.id, question]));
+    const answeredQuestionIds = new Set<string>();
+
+    for (const answer of answers) {
+      const question = questionById.get(answer.questionId);
+      if (!question) {
+        throw new AppError(400, 'BAD_REQUEST', 'Survey response contains an invalid question.');
+      }
+      if (answeredQuestionIds.has(answer.questionId)) {
+        throw new AppError(400, 'BAD_REQUEST', 'Survey response contains duplicate answers.');
+      }
+      answeredQuestionIds.add(answer.questionId);
+      this.assertAnswerMatchesQuestion(question, answer.value);
+    }
+
+    const missingRequiredQuestionIds = questions
+      .filter((question) => question.required && !answeredQuestionIds.has(question.id))
+      .map((question) => question.id);
+
+    if (missingRequiredQuestionIds.length > 0) {
+      throw new AppError(400, 'BAD_REQUEST', 'Survey response is missing required answers.', {
+        missingQuestionIds: missingRequiredQuestionIds,
+      });
+    }
+  }
+
+  private assertAnswerMatchesQuestion(question: SurveyQuestionRecord, value: unknown): void {
+    if (!isRecord(value) || value.type !== question.questionType) {
+      throw new AppError(400, 'BAD_REQUEST', 'Survey answer type does not match its question.');
+    }
+
+    const config = normalizeSurveyQuestionConfiguration(question.questionType, question.configuration);
+    switch (question.questionType) {
+      case 'SHORT_TEXT':
+      case 'LONG_TEXT':
+        this.assertNonEmptyStringValue(value, 'text', question.required);
+        return;
+      case 'SINGLE_CHOICE':
+        this.assertSingleChoiceAnswer(value, config);
+        return;
+      case 'MULTIPLE_CHOICE':
+        this.assertMultipleChoiceAnswer(value, config, question.required);
+        return;
+      case 'RATING':
+        this.assertRatingAnswer(value, config);
+        return;
+      case 'NPS':
+        this.assertIntegerInRange(value.value, 0, 10, 'NPS answers must be between 0 and 10.');
+        return;
+      case 'DATE':
+        this.assertNonEmptyStringValue(value, 'date', question.required);
+        return;
+      case 'NUMBER':
+        this.assertNumberAnswer(value, config);
+        return;
+      case 'YES_NO':
+        if (typeof value.value !== 'boolean') {
+          throw new AppError(400, 'BAD_REQUEST', 'Yes/no answers must be boolean.');
+        }
+        return;
+    }
+  }
+
+  private assertSingleChoiceAnswer(value: SurveyAnswerValue, config: SurveyQuestionConfiguration): void {
+    const optionId = getString(value.option_id);
+    if (!optionId || !this.getChoiceOptionIds(config).has(optionId)) {
+      throw new AppError(400, 'BAD_REQUEST', 'Single choice answer references an invalid option.');
+    }
+  }
+
+  private assertMultipleChoiceAnswer(
+    value: SurveyAnswerValue,
+    config: SurveyQuestionConfiguration,
+    required: boolean,
+  ): void {
+    if (!Array.isArray(value.option_ids)) {
+      throw new AppError(400, 'BAD_REQUEST', 'Multiple choice answers must include option_ids.');
+    }
+    const optionIds = value.option_ids.filter((optionId): optionId is string => typeof optionId === 'string');
+    if (optionIds.length !== value.option_ids.length || new Set(optionIds).size !== optionIds.length) {
+      throw new AppError(400, 'BAD_REQUEST', 'Multiple choice answers contain invalid options.');
+    }
+    if (required && optionIds.length === 0) {
+      throw new AppError(400, 'BAD_REQUEST', 'Required multiple choice questions need at least one option.');
+    }
+
+    const allowedOptionIds = this.getChoiceOptionIds(config);
+    if (optionIds.some((optionId) => !allowedOptionIds.has(optionId))) {
+      throw new AppError(400, 'BAD_REQUEST', 'Multiple choice answer references an invalid option.');
+    }
+
+    const minSelections = getNumber(config.min_selections);
+    const maxSelections = getNumber(config.max_selections);
+    if (minSelections !== null && optionIds.length < minSelections) {
+      throw new AppError(400, 'BAD_REQUEST', 'Multiple choice answer has fewer selections than allowed.');
+    }
+    if (maxSelections !== null && optionIds.length > maxSelections) {
+      throw new AppError(400, 'BAD_REQUEST', 'Multiple choice answer has more selections than allowed.');
+    }
+  }
+
+  private assertRatingAnswer(value: SurveyAnswerValue, config: SurveyQuestionConfiguration): void {
+    const max = getNumber(config.max) ?? 5;
+    this.assertIntegerInRange(value.value, 1, max, 'Rating answers are outside the configured range.');
+  }
+
+  private assertNumberAnswer(value: SurveyAnswerValue, config: SurveyQuestionConfiguration): void {
+    const numberValue = getNumber(value.value);
+    if (numberValue === null) {
+      throw new AppError(400, 'BAD_REQUEST', 'Number answers must be numeric.');
+    }
+    const min = getNumber(config.min);
+    const max = getNumber(config.max);
+    if (min !== null && numberValue < min) {
+      throw new AppError(400, 'BAD_REQUEST', 'Number answer is below the configured minimum.');
+    }
+    if (max !== null && numberValue > max) {
+      throw new AppError(400, 'BAD_REQUEST', 'Number answer is above the configured maximum.');
+    }
+  }
+
+  private assertNonEmptyStringValue(value: SurveyAnswerValue, field: string, required: boolean): void {
+    const stringValue = getString(value[field]);
+    if (required && (!stringValue || stringValue.trim().length === 0)) {
+      throw new AppError(400, 'BAD_REQUEST', 'Required survey answer is empty.');
+    }
+  }
+
+  private assertIntegerInRange(value: unknown, min: number, max: number, message: string): void {
+    const numberValue = getNumber(value);
+    if (numberValue === null || !Number.isInteger(numberValue) || numberValue < min || numberValue > max) {
+      throw new AppError(400, 'BAD_REQUEST', message);
+    }
+  }
+
+  private getChoiceOptionIds(config: SurveyQuestionConfiguration): Set<string> {
+    const options = Array.isArray(config.options) ? config.options : [];
+    return new Set(
+      options
+        .filter(isRecord)
+        .map((option) => getString(option.id))
+        .filter((optionId): optionId is string => Boolean(optionId)),
+    );
   }
 
   private async getReadableSurvey(actor: AuthenticatedActor, surveyId: string) {
     const survey = await this.getTenantSurvey(actor.companyId, surveyId);
-    if (!this.canReadSurvey(actor, survey)) {
+    if (!(await this.access.canRead(actor, survey))) {
       throw new AppError(403, 'FORBIDDEN', 'You do not have permission to access this survey.');
     }
     return survey;

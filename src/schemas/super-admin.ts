@@ -33,6 +33,7 @@ const companyBodyFields = {
   landingPageActive: z.boolean().optional(),
   landingPageLayout: z.string().trim().min(2).max(40).nullable().optional(),
   checklistsEnabled: z.boolean().optional(),
+  surveysEnabled: z.boolean().optional(),
 };
 
 export const superAdminCreateCompanyBodySchema = z.object(companyBodyFields);

@@ -118,3 +118,12 @@ export interface RepositoryMetricsSummary {
     averageRating: number | null;
   }>;
 }
+
+export interface ContentMetricSummary {
+  contentId: string;
+  repositoryId: string;
+  viewsCount: number;
+  ratingsCount: number;
+  averageRating: number | null;
+  currentUserRating: number | null;
+}
