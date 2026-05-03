@@ -7,7 +7,7 @@ export interface SystemInfo {
   capabilities: {
     auth: 'disabled' | 'jwt' | 'jwt-session';
     tenantContext: 'jwt-derived' | 'placeholder' | 'header-or-public' | 'jwt-and-public';
-    dataAccess: 'interfaces-only' | 'in-memory-adapter';
+    dataAccess: 'interfaces-only' | 'in-memory-adapter' | 'supabase-adapter';
   };
   entrypoints: {
     root: string;

@@ -52,8 +52,11 @@ export class SystemService {
       },
       {
         name: 'data-access',
-        status: 'warn',
-        detail: 'Phase 1 is active with an in-memory persistence adapter while the final database integration is deferred.',
+        status: this.env.REPOSITORY.driver === 'supabase' ? 'pass' : 'warn',
+        detail:
+          this.env.REPOSITORY.driver === 'supabase'
+            ? 'Supabase persistence adapter is active.'
+            : 'In-memory persistence adapter is active.',
       },
     ];
 
@@ -74,7 +77,7 @@ export class SystemService {
       capabilities: {
         auth: this.env.AUTH.mode === 'disabled' ? 'disabled' : 'jwt-session',
         tenantContext: this.env.AUTH.mode === 'disabled' ? 'header-or-public' : 'jwt-and-public',
-        dataAccess: 'in-memory-adapter',
+        dataAccess: this.env.REPOSITORY.driver === 'supabase' ? 'supabase-adapter' : 'in-memory-adapter',
       },
       entrypoints: {
         root: '/',
