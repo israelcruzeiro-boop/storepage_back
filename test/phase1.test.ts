@@ -1057,6 +1057,32 @@ test('login requires tenant for regular users but allows global super admin logi
   assert.equal(linkNamePayload.code, 'INVALID_CREDENTIALS');
 });
 
+test('login rejects legacy super admin without company assignment without leaking an internal error', async (t) => {
+  const env = createJwtEnv();
+  const seed = await createSeed();
+  seed.users = seed.users.map((user) =>
+    user.id === SUPER_ADMIN_ALPHA_ID ? { ...user, companyId: null as unknown as string } : user,
+  );
+  const app = buildApp(env, { seed });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const response = await app.inject({
+    method: 'POST',
+    url: '/api/auth/login',
+    payload: {
+      identifier: 'super.admin@storepage.com',
+      password: 'Password123!',
+    },
+  });
+
+  assert.equal(response.statusCode, 401);
+  const payload = response.json() as ErrorResponse;
+  assert.equal(payload.code, 'INVALID_CREDENTIALS');
+});
+
 test('own profile onboarding endpoint is authenticated and only accepts the lightweight contract', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {

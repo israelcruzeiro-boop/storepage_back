@@ -462,6 +462,12 @@ export class AuthService {
   }
 
   private async assertUserCanAuthenticate(user: UserRecord): Promise<void> {
+    if (!user.companyId) {
+      throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid identifier or password.', {
+        reason: 'missing_company_assignment',
+      });
+    }
+
     const company = await this.companyService.getCompanyRecord(user.companyId);
 
     if (!company.active || company.status !== 'ACTIVE') {
