@@ -145,8 +145,12 @@ export class AuthService {
   }
 
   public async getMe(actor: AuthenticatedActor) {
-    const user = await this.getCurrentUser(actor);
-    const company = await this.companyService.getCurrentCompany(actor.companyId);
+    const [userResult, companyResult] = await Promise.allSettled([
+      this.getCurrentUser(actor),
+      this.companyService.getCurrentCompany(actor.companyId),
+    ]);
+    const user = this.unwrapLookupResult(userResult);
+    const company = this.unwrapLookupResult(companyResult);
 
     return {
       user: toUserView(user),
@@ -522,5 +526,13 @@ export class AuthService {
     }
 
     return parsedIdentity.data;
+  }
+
+  private unwrapLookupResult<T>(result: PromiseSettledResult<T>): T {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+
+    return result.value;
   }
 }

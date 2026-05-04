@@ -17,6 +17,16 @@ export const quizIdParamsSchema = z.object({ id: z.string().uuid() });
 
 const nullableStringSchema = z.string().trim().nullable().optional();
 const idArraySchema = z.array(z.string().uuid()).default([]);
+const csvUuidArraySchema = z
+  .string()
+  .optional()
+  .default('')
+  .transform((value) => Array.from(new Set(value.split(',').map((id) => id.trim()).filter(Boolean))))
+  .pipe(z.array(z.string().uuid()).max(100));
+
+export const courseIdsQuerySchema = z.object({
+  courseIds: csvUuidArraySchema,
+});
 
 const courseBodySchema = z.object({
   title: z.string().trim().min(2),

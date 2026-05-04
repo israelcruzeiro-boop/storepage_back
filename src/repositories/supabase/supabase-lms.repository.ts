@@ -110,6 +110,19 @@ export class SupabaseLmsRepository implements LmsRepository {
     return result.rows.map(toCourseModuleRecord);
   }
 
+  public async listModulesByCourseIds(courseIds: string[]): Promise<CourseModuleRecord[]> {
+    if (courseIds.length === 0) return [];
+    const result = await this.client.select<CourseModuleRow>('course_modules', {
+      select: COURSE_MODULE_SELECT,
+      filters: [
+        { column: 'course_id', operator: 'in', value: courseIds },
+        { column: 'deleted_at', operator: 'is', value: null },
+      ],
+      order: [{ column: 'course_id' }, { column: 'order_index' }],
+    });
+    return result.rows.map(toCourseModuleRecord);
+  }
+
   public async findModuleById(companyId: string, moduleId: string): Promise<CourseModuleRecord | null> {
     const row = await this.client.selectOne<CourseModuleRow>('course_modules', {
       select: COURSE_MODULE_SELECT,
@@ -272,12 +285,16 @@ export class SupabaseLmsRepository implements LmsRepository {
     return row ? toCourseEnrollmentRecord(row) : null;
   }
 
-  public async listEnrollments(companyId: string, filters: { courseId?: string; userId?: string } = {}): Promise<CourseEnrollmentRecord[]> {
+  public async listEnrollments(companyId: string, filters: { courseId?: string; courseIds?: string[]; userId?: string } = {}): Promise<CourseEnrollmentRecord[]> {
     const queryFilters: SelectFilter[] = [
       { column: 'company_id', operator: 'eq', value: companyId },
       { column: 'deleted_at', operator: 'is', value: null },
     ];
     if (filters.courseId) queryFilters.push({ column: 'course_id', operator: 'eq', value: filters.courseId });
+    if (filters.courseIds) {
+      if (filters.courseIds.length === 0) return [];
+      queryFilters.push({ column: 'course_id', operator: 'in', value: filters.courseIds });
+    }
     if (filters.userId) queryFilters.push({ column: 'user_id', operator: 'eq', value: filters.userId });
 
     const result = await this.client.select<CourseEnrollmentRow>('course_enrollments', {

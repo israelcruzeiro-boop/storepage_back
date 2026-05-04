@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { requireAdminRole, requireAuthenticatedRequest } from '../lib/access-control.js';
 import {
   completeEnrollmentBodySchema,
+  courseIdsQuerySchema,
   contentIdParamsSchema,
   courseIdParamsSchema,
   createContentBodySchema,
@@ -33,6 +34,13 @@ export const coursesRoutes: FastifyPluginAsync = async (app) => {
     const auth = requireAuthenticatedRequest(request);
     const data = await app.services.lms.listCourses(auth.actor);
     return reply.success(data, { message: 'Courses loaded successfully.' });
+  });
+
+  app.get('/courses/enrollments', async (request, reply) => {
+    const auth = requireAuthenticatedRequest(request);
+    const query = courseIdsQuerySchema.parse(request.query);
+    const data = await app.services.lms.listOwnEnrollments(auth.actor, query.courseIds);
+    return reply.success(data, { message: 'Course enrollments loaded successfully.' });
   });
 
   app.get('/courses/:id', async (request, reply) => {

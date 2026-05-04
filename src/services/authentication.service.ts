@@ -33,19 +33,25 @@ export class AuthenticationService {
       throw new AppError(401, 'INVALID_TOKEN', 'JWT authentication failed.');
     }
 
-    const company = await this.companyRepository.findById(tokenIdentity.companyId);
+    const [companyResult, userResult, sessionResult] = await Promise.allSettled([
+      this.companyRepository.findById(tokenIdentity.companyId),
+      this.userRepository.findById(tokenIdentity.companyId, tokenIdentity.subject),
+      this.authSessionRepository.findById(tokenIdentity.sessionId),
+    ]);
+
+    const company = this.unwrapLookupResult(companyResult);
 
     if (!company || !company.active || company.status !== 'ACTIVE') {
       throw new AppError(401, 'INVALID_TOKEN', 'JWT authentication failed.');
     }
 
-    const user = await this.userRepository.findById(tokenIdentity.companyId, tokenIdentity.subject);
+    const user = this.unwrapLookupResult(userResult);
 
     if (!user || !user.active || user.status !== 'ACTIVE') {
       throw new AppError(401, 'INVALID_TOKEN', 'JWT authentication failed.');
     }
 
-    const session = await this.authSessionRepository.findById(tokenIdentity.sessionId);
+    const session = this.unwrapLookupResult(sessionResult);
 
     if (
       !session ||
@@ -142,5 +148,13 @@ export class AuthenticationService {
   private readOptionalStringClaim(payload: Record<string, unknown>, claimName: string): string | undefined {
     const value = payload[claimName];
     return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  }
+
+  private unwrapLookupResult<T>(result: PromiseSettledResult<T>): T {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+
+    return result.value;
   }
 }

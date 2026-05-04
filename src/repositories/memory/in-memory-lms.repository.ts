@@ -44,6 +44,15 @@ export class InMemoryLmsRepository implements LmsRepository {
       .sort((a, b) => a.orderIndex - b.orderIndex);
   }
 
+  public async listModulesByCourseIds(courseIds: string[]): Promise<CourseModuleRecord[]> {
+    if (courseIds.length === 0) return [];
+    const ids = new Set(courseIds);
+    return this.store
+      .listCourseModules()
+      .filter((module) => ids.has(module.courseId) && isActive(module))
+      .sort((a, b) => a.courseId.localeCompare(b.courseId) || a.orderIndex - b.orderIndex);
+  }
+
   public async findModuleById(companyId: string, moduleId: string): Promise<CourseModuleRecord | null> {
     const module = this.store.getCourseModule(moduleId);
     if (!module || !isActive(module)) return null;
@@ -154,11 +163,13 @@ export class InMemoryLmsRepository implements LmsRepository {
     return enrollment && enrollment.companyId === companyId && isActive(enrollment) ? enrollment : null;
   }
 
-  public async listEnrollments(companyId: string, filters: { courseId?: string; userId?: string } = {}): Promise<CourseEnrollmentRecord[]> {
+  public async listEnrollments(companyId: string, filters: { courseId?: string; courseIds?: string[]; userId?: string } = {}): Promise<CourseEnrollmentRecord[]> {
+    const courseIds = filters.courseIds ? new Set(filters.courseIds) : null;
     return this.store
       .listCourseEnrollments()
       .filter((enrollment) => enrollment.companyId === companyId && isActive(enrollment))
       .filter((enrollment) => !filters.courseId || enrollment.courseId === filters.courseId)
+      .filter((enrollment) => !courseIds || courseIds.has(enrollment.courseId))
       .filter((enrollment) => !filters.userId || enrollment.userId === filters.userId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }

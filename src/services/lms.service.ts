@@ -72,15 +72,52 @@ export class LmsService {
 
   public async listCourses(actor: AuthenticatedActor) {
     const courses = await this.repository.listCourses(actor.companyId);
-    const modules = await Promise.all(courses.map((course) => this.repository.listModules(course.id)));
-    const moduleCountByCourseId = new Map(courses.map((course, index) => [course.id, modules[index]?.length ?? 0]));
     const readableCourses = await this.access.filterReadable(actor, courses);
-    return readableCourses.map((course) => this.toCourseView(course, moduleCountByCourseId.get(course.id) ?? 0));
+    const readableCourseIds = readableCourses.map((course) => course.id);
+    const modules = await this.repository.listModulesByCourseIds(readableCourseIds);
+    const moduleCountByCourseId = new Map<string, number>();
+    const moduleCourseById = new Map<string, string>();
+    modules.forEach((module) => {
+      moduleCountByCourseId.set(module.courseId, (moduleCountByCourseId.get(module.courseId) ?? 0) + 1);
+      moduleCourseById.set(module.id, module.courseId);
+    });
+    const contents = modules.length > 0
+      ? await this.repository.listContents(actor.companyId, { moduleIds: modules.map((module) => module.id) })
+      : [];
+    const contentCountByCourseId = new Map<string, number>();
+    contents.forEach((content) => {
+      const courseId = moduleCourseById.get(content.moduleId);
+      if (!courseId) return;
+      contentCountByCourseId.set(courseId, (contentCountByCourseId.get(courseId) ?? 0) + 1);
+    });
+    return readableCourses.map((course) => this.toCourseView(
+      course,
+      moduleCountByCourseId.get(course.id) ?? 0,
+      contentCountByCourseId.get(course.id) ?? 0,
+    ));
   }
 
   public async getCourse(actor: AuthenticatedActor, courseId: string) {
     const course = await this.getReadableCourse(actor, courseId);
-    return this.toCourseView(course, (await this.repository.listModules(course.id)).length);
+    const modules = await this.repository.listModules(course.id);
+    const contents = modules.length > 0
+      ? await this.repository.listContents(actor.companyId, { moduleIds: modules.map((module) => module.id) })
+      : [];
+    return this.toCourseView(course, modules.length, contents.length);
+  }
+
+  public async listOwnEnrollments(actor: AuthenticatedActor, courseIds: string[]) {
+    const uniqueCourseIds = Array.from(new Set(courseIds));
+    if (uniqueCourseIds.length === 0) return [];
+    const requestedCourseIds = new Set(uniqueCourseIds);
+    const courses = (await this.repository.listCourses(actor.companyId)).filter((course) => requestedCourseIds.has(course.id));
+    const readableCourses = await this.access.filterReadable(actor, courses);
+    if (readableCourses.length === 0) return [];
+    const enrollments = await this.repository.listEnrollments(actor.companyId, {
+      courseIds: readableCourses.map((course) => course.id),
+      userId: actor.userId,
+    });
+    return enrollments.map(this.toEnrollmentView);
   }
 
   public async createCourse(companyId: string, input: CourseInput) {
@@ -169,6 +206,7 @@ export class LmsService {
 
   public async listContentsByModules(actor: AuthenticatedActor, moduleIds: string[]) {
     const scopedModuleIds = await this.scopedModuleIds(actor, moduleIds);
+    if (scopedModuleIds.length === 0) return [];
     const contents = await this.repository.listContents(actor.companyId, { moduleIds: scopedModuleIds });
     return contents.map((content) => this.toContentView(content));
   }
@@ -224,6 +262,7 @@ export class LmsService {
 
   public async listQuestionsByModules(actor: AuthenticatedActor, moduleIds: string[]) {
     const scopedModuleIds = await this.scopedModuleIds(actor, moduleIds);
+    if (scopedModuleIds.length === 0) return [];
     const questions = await this.repository.listQuestions(actor.companyId, { moduleIds: scopedModuleIds });
     return this.attachQuestionOptions(questions);
   }
@@ -436,7 +475,7 @@ export class LmsService {
 
   public async getAnalytics(companyId: string) {
     const courses = await this.repository.listCourses(companyId);
-    const modules = (await Promise.all(courses.map((course) => this.repository.listModules(course.id)))).flat();
+    const modules = await this.repository.listModulesByCourseIds(courses.map((course) => course.id));
     const moduleIds = modules.map((module) => module.id);
     const [enrollments, questions] = await Promise.all([
       this.repository.listEnrollments(companyId),
@@ -453,7 +492,9 @@ export class LmsService {
   public async getModuleStats(actor: AuthenticatedActor, courseId: string) {
     await this.getReadableCourse(actor, courseId);
     const modules = await this.repository.listModules(courseId);
-    const contents = await this.repository.listContents(actor.companyId, { moduleIds: modules.map((module) => module.id) });
+    const contents = modules.length > 0
+      ? await this.repository.listContents(actor.companyId, { moduleIds: modules.map((module) => module.id) })
+      : [];
     return {
       totalModules: modules.length,
       totalContents: contents.length,
@@ -675,7 +716,7 @@ export class LmsService {
     };
   }
 
-  private toCourseView(course: CourseRecord, moduleCount = 0) {
+  private toCourseView(course: CourseRecord, moduleCount = 0, contentCount = 0) {
     return {
       id: course.id,
       companyId: course.companyId,
@@ -695,6 +736,7 @@ export class LmsService {
       diplomaTemplate: course.diplomaTemplate,
       layoutTemplate: course.layoutTemplate,
       moduleCount,
+      contentCount,
       createdAt: course.createdAt,
       updatedAt: course.updatedAt,
     };

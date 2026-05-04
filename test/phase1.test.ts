@@ -3857,9 +3857,12 @@ test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete
   });
 
   assert.equal(coursesResponse.statusCode, 200);
-  const coursesPayload = coursesResponse.json() as SuccessResponse<Array<{ id: string; layoutTemplate: string }>>;
+  const coursesPayload = coursesResponse.json() as SuccessResponse<Array<{ id: string; layoutTemplate: string; moduleCount?: number; contentCount?: number }>>;
   assert.equal(coursesPayload.data.some((course) => course.id === COURSE_ALPHA_ID), true);
-  assert.equal(coursesPayload.data.find((course) => course.id === COURSE_ALPHA_ID)?.layoutTemplate, 'focus');
+  const alphaCourse = coursesPayload.data.find((course) => course.id === COURSE_ALPHA_ID);
+  assert.equal(alphaCourse?.layoutTemplate, 'focus');
+  assert.equal(alphaCourse?.moduleCount, 1);
+  assert.equal(alphaCourse?.contentCount, 1);
   assert.equal(coursesPayload.data.some((course) => course.id === COURSE_BETA_ID), false);
 
   const crossTenantResponse = await app.inject({
@@ -4112,6 +4115,20 @@ test('phase 3 enrollments, analytics and quiz endpoints stamp actor identity', a
   const completedEnrollmentPayload = completedEnrollmentResponse.json() as SuccessResponse<{ id: string; status: string } | null>;
   assert.equal(completedEnrollmentPayload.data?.id, enrollmentPayload.data.id);
   assert.equal(completedEnrollmentPayload.data?.status, 'COMPLETED');
+
+  const batchEnrollmentsResponse = await app.inject({
+    method: 'GET',
+    url: `/api/courses/enrollments?courseIds=${COURSE_ALPHA_ID},${COURSE_BETA_ID}`,
+    headers: userHeaders,
+  });
+
+  assert.equal(batchEnrollmentsResponse.statusCode, 200);
+  const batchEnrollmentsPayload = batchEnrollmentsResponse.json() as SuccessResponse<Array<{ id: string; courseId: string; userId: string; companyId: string }>>;
+  assert.equal(batchEnrollmentsPayload.data.length, 1);
+  assert.equal(batchEnrollmentsPayload.data[0]?.id, enrollmentPayload.data.id);
+  assert.equal(batchEnrollmentsPayload.data[0]?.courseId, COURSE_ALPHA_ID);
+  assert.equal(batchEnrollmentsPayload.data[0]?.userId, USER_ALPHA_ID);
+  assert.equal(batchEnrollmentsPayload.data[0]?.companyId, COMPANY_ALPHA_ID);
 
   const repeatEnrollResponse = await app.inject({
     method: 'POST',

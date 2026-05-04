@@ -18,6 +18,7 @@ export interface LmsRepository {
   saveCourse(course: CourseRecord): Promise<CourseRecord>;
 
   listModules(courseId: string): Promise<CourseModuleRecord[]>;
+  listModulesByCourseIds(courseIds: string[]): Promise<CourseModuleRecord[]>;
   findModuleById(companyId: string, moduleId: string): Promise<CourseModuleRecord | null>;
   saveModule(module: CourseModuleRecord): Promise<CourseModuleRecord>;
 
@@ -34,7 +35,7 @@ export interface LmsRepository {
   findEnrollment(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null>;
   findEnrollmentIncludingDeleted(companyId: string, courseId: string, userId: string): Promise<CourseEnrollmentRecord | null>;
   findEnrollmentById(companyId: string, enrollmentId: string): Promise<CourseEnrollmentRecord | null>;
-  listEnrollments(companyId: string, filters?: { courseId?: string; userId?: string }): Promise<CourseEnrollmentRecord[]>;
+  listEnrollments(companyId: string, filters?: { courseId?: string; courseIds?: string[]; userId?: string }): Promise<CourseEnrollmentRecord[]>;
   saveEnrollment(enrollment: CourseEnrollmentRecord): Promise<CourseEnrollmentRecord>;
 
   listAnswers(enrollmentId: string): Promise<CourseAnswerRecord[]>;
