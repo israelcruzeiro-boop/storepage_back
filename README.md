@@ -133,6 +133,7 @@ Use `.env.example` como base.
 - `JWT_CLOCK_TOLERANCE_SECONDS`
 - `ACCESS_TOKEN_TTL_MINUTES`
 - `REFRESH_TOKEN_TTL_DAYS`
+- `AUTH_COOKIE_SAME_SITE` (`lax`, `strict` ou `none`)
 
 ### Cache publico
 - `PUBLIC_TENANT_CACHE_TTL_SECONDS`
@@ -151,6 +152,7 @@ Use `.env.example` como base.
 - `JWT_AUTH_MODE=shared-secret` e o modo que suporta emissao de tokens de sessao da API nesta fase.
 - `JWT_AUTH_MODE=jwks` continua suportando verificacao de tokens, mas login/refresh da propria API dependem do modo com segredo simetrico ate a estrategia final de emissao ser definida.
 - Em `NODE_ENV=production`, a validacao de ambiente falha se `JWT_AUTH_MODE=disabled`, se `CORS_ALLOW_CREDENTIALS=false` ou se `CORS_ORIGINS=*`. Auth por cookie HttpOnly exige credentials habilitado e origem explicita do frontend.
+- Use `AUTH_COOKIE_SAME_SITE=none` somente quando frontend e API estiverem em origens HTTPS cross-site; mantenha `lax` quando estiverem no mesmo site.
 - Em producao, use `JWT_AUTH_MODE=shared-secret` com `JWT_SHARED_SECRET` forte fora do git, ou `JWT_AUTH_MODE=jwks` com `JWT_JWKS_URL` HTTPS valido. Nunca versionar `.env`, `.env.production`, service role, segredos JWT ou cookies.
 - Em producao, `INVITE_DELIVERY_PROVIDER` deve ser `smtp`, `INVITE_ACTIVATION_BASE_URL` deve ser HTTPS e os segredos SMTP devem ficar fora do git. O backend monta o link de ativacao e entrega somente ao provider; o payload admin nunca recebe token ou link.
 - Tentativas de envio/reenvio de convite ficam auditadas em `invite_delivery_attempts` sem token, link ou segredo SMTP.

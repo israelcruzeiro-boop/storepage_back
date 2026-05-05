@@ -7,6 +7,7 @@ const nodeEnvSchema = z.enum(['development', 'test', 'production']);
 const repositoryDriverSchema = z.enum(['memory', 'supabase']);
 const jwtAuthModeSchema = z.enum(['disabled', 'shared-secret', 'jwks']);
 const inviteDeliveryProviderSchema = z.enum(['noop', 'smtp']);
+const authCookieSameSiteSchema = z.enum(['lax', 'strict', 'none']);
 const jwtAlgorithmSchema = z.enum([
   'HS256',
   'HS384',
@@ -114,6 +115,7 @@ const rawEnvSchema = z
     JWT_CLOCK_TOLERANCE_SECONDS: z.coerce.number().int().min(0).max(300).default(5),
     ACCESS_TOKEN_TTL_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(90).default(14),
+    AUTH_COOKIE_SAME_SITE: authCookieSameSiteSchema.default('lax'),
     PUBLIC_TENANT_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
     INVITE_DELIVERY_PROVIDER: inviteDeliveryProviderSchema.default('noop'),
     INVITE_ACTIVATION_BASE_URL: z.string().trim().min(1).default('http://localhost:8080/ativar-convite'),
@@ -159,6 +161,14 @@ const rawEnvSchema = z
       });
     }
 
+    if (env.AUTH_COOKIE_SAME_SITE === 'none' && env.NODE_ENV !== 'production') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AUTH_COOKIE_SAME_SITE'],
+        message: 'AUTH_COOKIE_SAME_SITE=none is only allowed in production with HTTPS.',
+      });
+    }
+
     if (env.NODE_ENV === 'production') {
       if (env.JWT_AUTH_MODE === 'disabled') {
         context.addIssue({
@@ -181,6 +191,14 @@ const rawEnvSchema = z
           code: z.ZodIssueCode.custom,
           path: ['CORS_ORIGINS'],
           message: 'CORS_ORIGINS must list explicit frontend origins in production.',
+        });
+      }
+
+      if (env.AUTH_COOKIE_SAME_SITE === 'none' && !env.CORS_ALLOW_CREDENTIALS) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['CORS_ALLOW_CREDENTIALS'],
+          message: 'CORS_ALLOW_CREDENTIALS must be true when AUTH_COOKIE_SAME_SITE=none.',
         });
       }
 
@@ -393,6 +411,7 @@ const appEnvSchema = rawEnvSchema.transform((env) => {
       clockToleranceSeconds: env.JWT_CLOCK_TOLERANCE_SECONDS,
       accessTokenTtlMinutes: env.ACCESS_TOKEN_TTL_MINUTES,
       refreshTokenTtlDays: env.REFRESH_TOKEN_TTL_DAYS,
+      cookieSameSite: env.AUTH_COOKIE_SAME_SITE,
     },
     PUBLIC_TENANT_CACHE_TTL_SECONDS: env.PUBLIC_TENANT_CACHE_TTL_SECONDS,
     INVITE_DELIVERY: {

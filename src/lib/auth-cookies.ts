@@ -13,16 +13,28 @@ function buildInviteActivationCookiePath(env: AppEnv): string {
   return `${env.API_PREFIX}/auth/invites`;
 }
 
+function formatSameSiteAttribute(sameSite: AppEnv['AUTH']['cookieSameSite']): string {
+  switch (sameSite) {
+    case 'none':
+      return 'SameSite=None';
+    case 'strict':
+      return 'SameSite=Strict';
+    case 'lax':
+    default:
+      return 'SameSite=Lax';
+  }
+}
+
 function buildCookieAttributes(env: AppEnv, maxAgeSeconds: number, expiresAt: Date, path: string): string[] {
   const attributes = [
     'HttpOnly',
-    'SameSite=Lax',
+    formatSameSiteAttribute(env.AUTH.cookieSameSite),
     `Path=${path}`,
     `Max-Age=${maxAgeSeconds}`,
     `Expires=${expiresAt.toUTCString()}`,
   ];
 
-  if (env.NODE_ENV === 'production') {
+  if (env.NODE_ENV === 'production' || env.AUTH.cookieSameSite === 'none') {
     attributes.push('Secure');
   }
 

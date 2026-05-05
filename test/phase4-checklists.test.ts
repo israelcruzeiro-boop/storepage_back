@@ -50,6 +50,7 @@ function createJwtEnv(): AppEnv {
     JWT_CLOCK_TOLERANCE_SECONDS: '0',
     ACCESS_TOKEN_TTL_MINUTES: '15',
     REFRESH_TOKEN_TTL_DAYS: '14',
+    AUTH_COOKIE_SAME_SITE: 'lax',
     PUBLIC_TENANT_CACHE_TTL_SECONDS: '60',
   });
 }

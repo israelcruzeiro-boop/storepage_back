@@ -101,6 +101,7 @@ function createJwtEnv(overrides: Partial<Record<string, string>> = {}): AppEnv {
     JWT_CLOCK_TOLERANCE_SECONDS: '0',
     ACCESS_TOKEN_TTL_MINUTES: '15',
     REFRESH_TOKEN_TTL_DAYS: '14',
+    AUTH_COOKIE_SAME_SITE: 'lax',
     PUBLIC_TENANT_CACHE_TTL_SECONDS: '60',
     INVITE_DELIVERY_PROVIDER: 'noop',
     INVITE_ACTIVATION_BASE_URL: 'http://localhost:8080/ativar-convite',
@@ -1690,6 +1691,31 @@ test('invite activation cookie is secure in production', async (t) => {
   assert.match(cookieHeader, /HttpOnly/);
   assert.match(cookieHeader, /SameSite=Lax/);
   assert.match(cookieHeader, /Secure/);
+});
+
+test('auth cookies can opt into SameSite=None for cross-site production frontends', async (t) => {
+  const env = createJwtEnv({
+    ...smtpInviteDeliveryEnv(),
+    NODE_ENV: 'production',
+    CORS_ORIGINS: 'https://app.storepage.com',
+    CORS_ALLOW_CREDENTIALS: 'true',
+    AUTH_COOKIE_SAME_SITE: 'none',
+  });
+  const seed = await createSeed();
+  const app = buildApp(env, { seed });
+  await app.ready();
+  t.after(async () => {
+    await app.close();
+  });
+
+  const loginResponse = await injectAdminAlphaLogin(app);
+  assert.equal(loginResponse.statusCode, 200);
+  const cookieHeader = readSetCookieHeader(loginResponse.headers as Record<string, unknown>);
+  assert.match(cookieHeader, new RegExp(`^${REFRESH_TOKEN_COOKIE_NAME}=`));
+  assert.match(cookieHeader, /HttpOnly/);
+  assert.match(cookieHeader, /SameSite=None/);
+  assert.match(cookieHeader, /Secure/);
+  assert.match(cookieHeader, /Path=\/api\/auth/);
 });
 
 test('sensitive public auth endpoints apply conservative rate limits', async (t) => {
