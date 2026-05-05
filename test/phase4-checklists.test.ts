@@ -641,6 +641,36 @@ test('phase 4 admin dashboard and submissions respect tenant', async (t) => {
     assert.equal(s.companyId, COMPANY_ALPHA_ID);
   }
 
+  const paginatedChecklistsRes = await app.inject({
+    method: 'GET', url: '/api/admin/checklists/paginated?page=1&limit=1&search=Alpha',
+    headers: auth,
+  });
+  assert.equal(paginatedChecklistsRes.statusCode, 200);
+  const paginatedChecklists = paginatedChecklistsRes.json() as SuccessResponse<{
+    items: Array<{ companyId: string; title: string }>;
+    meta: { page: number; limit: number; total: number; totalPages: number; hasNextPage: boolean; hasPreviousPage: boolean };
+  }>;
+  assert.equal(paginatedChecklists.data.meta.page, 1);
+  assert.equal(paginatedChecklists.data.meta.limit, 1);
+  assert.ok(paginatedChecklists.data.meta.total >= 1);
+  assert.equal(paginatedChecklists.data.items.length, 1);
+  assert.equal(paginatedChecklists.data.items[0]?.companyId, COMPANY_ALPHA_ID);
+
+  const paginatedSubmissionsRes = await app.inject({
+    method: 'GET', url: '/api/admin/checklists/submissions/paginated?page=1&limit=1',
+    headers: auth,
+  });
+  assert.equal(paginatedSubmissionsRes.statusCode, 200);
+  const paginatedSubmissions = paginatedSubmissionsRes.json() as SuccessResponse<{
+    items: Array<{ companyId: string; checklist: { title: string } | null }>;
+    meta: { page: number; limit: number; total: number; totalPages: number; hasNextPage: boolean; hasPreviousPage: boolean };
+  }>;
+  assert.equal(paginatedSubmissions.data.meta.page, 1);
+  assert.equal(paginatedSubmissions.data.meta.limit, 1);
+  assert.ok(paginatedSubmissions.data.meta.total >= 1);
+  assert.equal(paginatedSubmissions.data.items.length, 1);
+  assert.equal(paginatedSubmissions.data.items[0]?.companyId, COMPANY_ALPHA_ID);
+
   // Beta admin dashboard sees different data
   const betaLogin = await loginAsAdminBeta(app);
   const betaAuth = { authorization: `Bearer ${betaLogin.data.accessToken}` };

@@ -11,7 +11,7 @@ import type {
   QuizQuestionRecord,
   QuizRecord,
 } from '../../modules/lms/contracts/lms.types.js';
-import type { LmsRepository } from '../contracts/lms.repository.js';
+import type { CourseListFilters, LmsRepository } from '../contracts/lms.repository.js';
 import type { InMemoryStore } from './in-memory-store.js';
 
 function isActive<T extends { deletedAt: string | null }>(record: T): boolean {
@@ -26,6 +26,25 @@ export class InMemoryLmsRepository implements LmsRepository {
       .listCourses()
       .filter((course) => course.companyId === companyId && isActive(course))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  public async listCoursesPaginated(companyId: string, filters: CourseListFilters) {
+    const search = filters.search?.trim().toLowerCase();
+    const filtered = this.store
+      .listCourses()
+      .filter((course) => course.companyId === companyId && isActive(course))
+      .filter((course) => !filters.status || filters.status === 'ALL' || course.status === filters.status)
+      .filter((course) => {
+        if (!search) return true;
+        return [course.title, course.description ?? ''].some((value) => value.toLowerCase().includes(search));
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    const offset = (filters.page - 1) * filters.limit;
+    return {
+      items: filtered.slice(offset, offset + filters.limit),
+      total: filtered.length,
+    };
   }
 
   public async findCourseById(companyId: string, courseId: string): Promise<CourseRecord | null> {

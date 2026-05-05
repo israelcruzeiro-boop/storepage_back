@@ -7,7 +7,7 @@ import type {
   ChecklistSectionRecord,
   ChecklistSubmissionRecord,
 } from '../../modules/checklists/contracts/checklists.types.js';
-import type { ChecklistQuestionPatch, ChecklistsRepository } from '../contracts/checklists.repository.js';
+import type { ChecklistListFilters, ChecklistQuestionPatch, ChecklistsRepository, SubmissionListFilters } from '../contracts/checklists.repository.js';
 import { SupabaseRestError, type SupabaseRestClient } from './supabase-rest-client.js';
 import {
   ACTION_PLAN_SELECT,
@@ -59,6 +59,34 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
       order: [{ column: 'created_at', ascending: false }],
     });
     return result.rows.map(toChecklistRecord);
+  }
+
+  public async listChecklistsPaginated(companyId: string, filters: ChecklistListFilters) {
+    const queryFilters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'company_id', operator: 'eq', value: companyId },
+    ];
+    if (!filters.includeDeleted) queryFilters.push({ column: 'deleted_at', operator: 'is', value: null });
+    if (filters.status && filters.status !== 'ALL') {
+      queryFilters.push({ column: 'status', operator: 'eq', value: filters.status });
+    }
+
+    const search = filters.search?.trim();
+    const result = await this.client.select<ChecklistRow>('checklists', {
+      select: CHECKLIST_SELECT,
+      filters: queryFilters,
+      or: search ? `title.ilike.*${search}*,description.ilike.*${search}*` : undefined,
+      order: [{ column: 'created_at', ascending: false }],
+      range: {
+        offset: (filters.page - 1) * filters.limit,
+        limit: filters.limit,
+      },
+      count: true,
+    });
+
+    return {
+      items: result.rows.map(toChecklistRecord),
+      total: result.total ?? result.rows.length,
+    };
   }
 
   public async findChecklistById(companyId: string, checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord | null> {
@@ -248,6 +276,32 @@ export class SupabaseChecklistsRepository implements ChecklistsRepository {
       order: [{ column: 'created_at', ascending: false }],
     });
     return result.rows.map(toChecklistSubmissionRecord);
+  }
+
+  public async listSubmissionsPaginated(companyId: string, filters: SubmissionListFilters) {
+    const queryFilters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'company_id', operator: 'eq', value: companyId },
+      { column: 'deleted_at', operator: 'is', value: null },
+    ];
+    if (filters.checklistId) queryFilters.push({ column: 'checklist_id', operator: 'eq', value: filters.checklistId });
+    if (filters.userId) queryFilters.push({ column: 'user_id', operator: 'eq', value: filters.userId });
+    if (filters.status) queryFilters.push({ column: 'status', operator: 'eq', value: filters.status });
+
+    const result = await this.client.select<ChecklistSubmissionRow>('checklist_submissions', {
+      select: CHECKLIST_SUBMISSION_SELECT,
+      filters: queryFilters,
+      order: [{ column: 'created_at', ascending: false }],
+      range: {
+        offset: (filters.page - 1) * filters.limit,
+        limit: filters.limit,
+      },
+      count: true,
+    });
+
+    return {
+      items: result.rows.map(toChecklistSubmissionRecord),
+      total: result.total ?? result.rows.length,
+    };
   }
 
   public async findSubmissionById(submissionId: string): Promise<ChecklistSubmissionRecord | null> {

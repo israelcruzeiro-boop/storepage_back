@@ -4,7 +4,7 @@ import type {
   SurveyRecord,
   SurveyResponseRecord,
 } from '../../modules/surveys/contracts/surveys.types.js';
-import type { SurveysRepository } from '../contracts/surveys.repository.js';
+import type { SurveyListFilters, SurveysRepository } from '../contracts/surveys.repository.js';
 import type { SupabaseRestClient } from './supabase-rest-client.js';
 import {
   SURVEY_ANSWER_SELECT,
@@ -38,6 +38,34 @@ export class SupabaseSurveysRepository implements SurveysRepository {
       order: [{ column: 'created_at', ascending: false }],
     });
     return result.rows.map(toSurveyRecord);
+  }
+
+  public async listSurveysPaginated(companyId: string, filters: SurveyListFilters) {
+    const queryFilters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'company_id', operator: 'eq', value: companyId },
+      { column: 'deleted_at', operator: 'is', value: null },
+    ];
+    if (filters.status && filters.status !== 'ALL') {
+      queryFilters.push({ column: 'status', operator: 'eq', value: filters.status });
+    }
+
+    const search = filters.search?.trim();
+    const result = await this.client.select<SurveyRow>('surveys', {
+      select: SURVEY_SELECT,
+      filters: queryFilters,
+      or: search ? `title.ilike.*${search}*,description.ilike.*${search}*` : undefined,
+      order: [{ column: 'created_at', ascending: false }],
+      range: {
+        offset: (filters.page - 1) * filters.limit,
+        limit: filters.limit,
+      },
+      count: true,
+    });
+
+    return {
+      items: result.rows.map(toSurveyRecord),
+      total: result.total ?? result.rows.length,
+    };
   }
 
   public async findSurveyById(companyId: string, surveyId: string): Promise<SurveyRecord | null> {

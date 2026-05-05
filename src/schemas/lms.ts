@@ -6,7 +6,7 @@ import {
   courseQuestionTypeValues,
   courseStatusValues,
 } from '../modules/lms/contracts/lms.types.js';
-import { restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
+import { paginationQuerySchema, restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 export const courseIdParamsSchema = z.object({ id: z.string().uuid() });
 export const moduleIdParamsSchema = z.object({ id: z.string().uuid() });
@@ -26,6 +26,10 @@ const csvUuidArraySchema = z
 
 export const courseIdsQuerySchema = z.object({
   courseIds: csvUuidArraySchema,
+});
+
+export const paginatedCoursesQuerySchema = paginationQuerySchema.extend({
+  status: z.enum(['ALL', ...courseStatusValues]).default('ALL'),
 });
 
 const courseBodySchema = z.object({

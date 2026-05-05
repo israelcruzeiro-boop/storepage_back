@@ -6,7 +6,7 @@ import {
   checklistStatusValues,
   submissionStatusValues,
 } from '../modules/checklists/contracts/checklists.types.js';
-import { restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
+import { paginationQuerySchema, restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 /* ---- Shared param schemas ---- */
 export const checklistIdParamsSchema = z.object({ id: z.string().uuid() });
@@ -132,6 +132,17 @@ export const submissionsQuerySchema = z.object({
   userId: z.string().uuid().optional(),
   status: z.enum(submissionStatusValues).optional(),
 }).optional();
+
+export const paginatedChecklistsQuerySchema = paginationQuerySchema.extend({
+  status: z.enum(['ALL', ...checklistStatusValues]).default('ALL'),
+  includeDeleted: z.coerce.boolean().default(false),
+});
+
+export const paginatedSubmissionsQuerySchema = paginationQuerySchema.extend({
+  checklistId: z.string().uuid().optional(),
+  userId: z.string().uuid().optional(),
+  status: z.enum(submissionStatusValues).optional(),
+});
 
 export const actionPlansQuerySchema = z.object({
   submissionId: z.string().uuid().optional(),

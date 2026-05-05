@@ -3,6 +3,7 @@ import { requireAdminRole, requireAuthenticatedRequest } from '../lib/access-con
 import {
   createSurveyBodySchema,
   createSurveyQuestionBodySchema,
+  paginatedSurveysQuerySchema,
   reorderSurveyQuestionsBodySchema,
   submitSurveyResponseBodySchema,
   surveyIdParamsSchema,
@@ -84,6 +85,13 @@ export const surveysRoutes: FastifyPluginAsync = async (app) => {
     const body = createSurveyBodySchema.parse(request.body);
     const data = await app.services.surveys.createSurvey(auth.actor, body);
     return reply.success(data, { statusCode: 201, message: 'Survey created successfully.' });
+  });
+
+  app.get('/admin/surveys/paginated', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const query = paginatedSurveysQuerySchema.parse(request.query);
+    const data = await app.services.surveys.adminListSurveysPaginated(auth.actor, query);
+    return reply.success(data, { message: 'Surveys loaded successfully.' });
   });
 
   app.put('/admin/surveys/:id', async (request, reply) => {

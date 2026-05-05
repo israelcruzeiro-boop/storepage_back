@@ -3,6 +3,7 @@ import { requireRole } from '../lib/access-control.js';
 import {
   companyIdParamsSchema,
   provisionAdminBodySchema,
+  superAdminCompaniesPaginatedQuerySchema,
   superAdminCompaniesQuerySchema,
   superAdminCompanyStatusBodySchema,
   superAdminCreateCompanyBodySchema,
@@ -25,6 +26,16 @@ export const superAdminRoutes: FastifyPluginAsync = async (app) => {
     const auth = requireRole(request, ['SUPER_ADMIN']);
     const query = superAdminCompaniesQuerySchema.parse(request.query);
     const data = await app.services.superAdmin.listCompanies(auth.actor, query.includeDeleted);
+
+    return reply.success(data, {
+      message: 'Companies loaded successfully.',
+    });
+  });
+
+  app.get('/super-admin/companies/paginated', async (request, reply) => {
+    const auth = requireRole(request, ['SUPER_ADMIN']);
+    const query = superAdminCompaniesPaginatedQuerySchema.parse(request.query);
+    const data = await app.services.superAdmin.listCompaniesPaginated(auth.actor, query);
 
     return reply.success(data, {
       message: 'Companies loaded successfully.',

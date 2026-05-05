@@ -11,6 +11,7 @@ import {
   createQuestionBodySchema,
   enrollmentIdParamsSchema,
   moduleIdParamsSchema,
+  paginatedCoursesQuerySchema,
   questionIdParamsSchema,
   resetEnrollmentBodySchema,
   submitCourseAnswerBodySchema,
@@ -48,6 +49,13 @@ export const coursesRoutes: FastifyPluginAsync = async (app) => {
     const params = courseIdParamsSchema.parse(request.params);
     const data = await app.services.lms.getCourse(auth.actor, params.id);
     return reply.success(data, { message: 'Course loaded successfully.' });
+  });
+
+  app.get('/admin/courses/paginated', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const query = paginatedCoursesQuerySchema.parse(request.query);
+    const data = await app.services.lms.adminListCoursesPaginated(auth.actor.companyId, query);
+    return reply.success(data, { message: 'Courses loaded successfully.' });
   });
 
   app.post('/admin/courses', async (request, reply) => {

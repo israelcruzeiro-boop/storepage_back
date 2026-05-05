@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { entityIdSchema, restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
+import { entityIdSchema, paginationQuerySchema, restrictedAccessBodyHasTarget, restrictedAccessTargetMessage } from './shared.js';
 
 export const surveyIdParamsSchema = z.object({
   id: entityIdSchema,
@@ -144,6 +144,10 @@ export const updateSurveyBodySchema = z.object(surveyBodyShape).partial().strict
   (value) => value.accessType !== 'RESTRICTED' || restrictedAccessBodyHasTarget(value),
   { message: restrictedAccessTargetMessage },
 );
+
+export const paginatedSurveysQuerySchema = paginationQuerySchema.extend({
+  status: z.enum(['ALL', 'DRAFT', 'ACTIVE', 'ARCHIVED']).default('ALL'),
+});
 
 const surveyQuestionBodyShape = {
   surveyId: entityIdSchema.optional(),

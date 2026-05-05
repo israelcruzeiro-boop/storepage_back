@@ -4,7 +4,7 @@ import type {
   SurveyRecord,
   SurveyResponseRecord,
 } from '../../modules/surveys/contracts/surveys.types.js';
-import type { SurveysRepository } from '../contracts/surveys.repository.js';
+import type { SurveyListFilters, SurveysRepository } from '../contracts/surveys.repository.js';
 import type { InMemoryStore } from './in-memory-store.js';
 
 export class InMemorySurveysRepository implements SurveysRepository {
@@ -15,6 +15,25 @@ export class InMemorySurveysRepository implements SurveysRepository {
       .listSurveys()
       .filter((survey) => survey.companyId === companyId && !survey.deletedAt)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  public async listSurveysPaginated(companyId: string, filters: SurveyListFilters) {
+    const search = filters.search?.trim().toLowerCase();
+    const filtered = this.store
+      .listSurveys()
+      .filter((survey) => survey.companyId === companyId && !survey.deletedAt)
+      .filter((survey) => !filters.status || filters.status === 'ALL' || survey.status === filters.status)
+      .filter((survey) => {
+        if (!search) return true;
+        return [survey.title, survey.description ?? ''].some((value) => value.toLowerCase().includes(search));
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    const offset = (filters.page - 1) * filters.limit;
+    return {
+      items: filtered.slice(offset, offset + filters.limit),
+      total: filtered.length,
+    };
   }
 
   public async findSurveyById(companyId: string, surveyId: string): Promise<SurveyRecord | null> {

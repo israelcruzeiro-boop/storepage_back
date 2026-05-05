@@ -11,7 +11,7 @@ import type {
   QuizQuestionRecord,
   QuizRecord,
 } from '../../modules/lms/contracts/lms.types.js';
-import type { LmsRepository } from '../contracts/lms.repository.js';
+import type { CourseListFilters, LmsRepository } from '../contracts/lms.repository.js';
 import type { SupabaseRestClient } from './supabase-rest-client.js';
 import {
   COURSE_ANSWER_SELECT,
@@ -76,6 +76,34 @@ export class SupabaseLmsRepository implements LmsRepository {
       order: [{ column: 'created_at', ascending: false }],
     });
     return result.rows.map(toCourseRecord);
+  }
+
+  public async listCoursesPaginated(companyId: string, filters: CourseListFilters) {
+    const queryFilters: Array<{ column: string; operator: 'eq' | 'is'; value: string | null }> = [
+      { column: 'company_id', operator: 'eq', value: companyId },
+      { column: 'deleted_at', operator: 'is', value: null },
+    ];
+    if (filters.status && filters.status !== 'ALL') {
+      queryFilters.push({ column: 'status', operator: 'eq', value: filters.status });
+    }
+
+    const search = filters.search?.trim();
+    const result = await this.client.select<CourseRow>('courses', {
+      select: COURSE_SELECT,
+      filters: queryFilters,
+      or: search ? `title.ilike.*${search}*,description.ilike.*${search}*` : undefined,
+      order: [{ column: 'created_at', ascending: false }],
+      range: {
+        offset: (filters.page - 1) * filters.limit,
+        limit: filters.limit,
+      },
+      count: true,
+    });
+
+    return {
+      items: result.rows.map(toCourseRecord),
+      total: result.total ?? result.rows.length,
+    };
   }
 
   public async findCourseById(companyId: string, courseId: string): Promise<CourseRecord | null> {

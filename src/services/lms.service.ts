@@ -14,7 +14,7 @@ import type {
   QuizAttemptRecord,
   QuizRecord,
 } from '../modules/lms/contracts/lms.types.js';
-import type { LmsRepository } from '../repositories/contracts/lms.repository.js';
+import type { CourseListFilters, LmsRepository } from '../repositories/contracts/lms.repository.js';
 
 interface CourseInput {
   title: string;
@@ -63,6 +63,12 @@ interface QuestionInput {
   }>;
 }
 type QuestionUpdateInput = Partial<QuestionInput>;
+
+function sanitizeOptionalHtmlContent(htmlContent: string | null | undefined): string | null | undefined {
+  if (htmlContent === undefined) return undefined;
+  if (htmlContent === null) return null;
+  return sanitizeHtml(htmlContent);
+}
 
 export class LmsService {
   public constructor(
@@ -136,6 +142,14 @@ export class LmsService {
     };
     await this.access.assertValidAccessTarget(companyId, course);
     return this.toCourseView(await this.repository.saveCourse(course));
+  }
+
+  public async adminListCoursesPaginated(companyId: string, filters: CourseListFilters) {
+    const { items, total } = await this.repository.listCoursesPaginated(companyId, filters);
+    return {
+      items: items.map((course) => this.toCourseView(course)),
+      meta: this.toPaginationMeta(filters.page, filters.limit, total),
+    };
   }
 
   public async updateCourse(companyId: string, courseId: string, input: CourseUpdateInput) {
@@ -224,7 +238,7 @@ export class LmsService {
       contentUrl: input.contentUrl ?? null,
       filePath: input.filePath ?? null,
       sizeBytes: input.sizeBytes ?? null,
-      htmlContent: input.htmlContent ?? null,
+      htmlContent: sanitizeOptionalHtmlContent(input.htmlContent) ?? null,
       deletedAt: null,
       createdAt: now,
       updatedAt: now,
@@ -240,7 +254,8 @@ export class LmsService {
       contentUrl: input.contentUrl === undefined ? content.contentUrl : input.contentUrl ?? null,
       filePath: input.filePath === undefined ? content.filePath : input.filePath ?? null,
       sizeBytes: input.sizeBytes === undefined ? content.sizeBytes : input.sizeBytes ?? null,
-      htmlContent: input.htmlContent === undefined ? content.htmlContent : input.htmlContent ?? null,
+      htmlContent:
+        input.htmlContent === undefined ? content.htmlContent : sanitizeOptionalHtmlContent(input.htmlContent) ?? null,
       updatedAt: new Date().toISOString(),
     };
     return this.toContentView(await this.repository.saveContent(next));
@@ -670,6 +685,18 @@ export class LmsService {
       throw new AppError(404, 'NOT_FOUND', 'Quiz not found.');
     }
     return quiz;
+  }
+
+  private toPaginationMeta(page: number, limit: number, total: number) {
+    const totalPages = Math.ceil(total / limit);
+    return {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    };
   }
 
   private async quizBelongsToCompany(companyId: string, quiz: QuizRecord) {

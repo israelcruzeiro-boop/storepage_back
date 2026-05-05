@@ -12,6 +12,8 @@ import {
   createSectionBodySchema,
   createSubmissionBodySchema,
   folderIdParamsSchema,
+  paginatedChecklistsQuerySchema,
+  paginatedSubmissionsQuerySchema,
   questionIdParamsSchema,
   reorderBodySchema,
   sectionIdParamsSchema,
@@ -114,6 +116,13 @@ export const checklistsRoutes: FastifyPluginAsync = async (app) => {
   app.get('/admin/checklists', async (request, reply) => {
     const auth = requireAdminRole(request);
     const data = await app.services.checklists.adminListChecklists(auth.actor.companyId);
+    return reply.success(data, { message: 'Checklists loaded successfully.' });
+  });
+
+  app.get('/admin/checklists/paginated', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const query = paginatedChecklistsQuerySchema.parse(request.query);
+    const data = await app.services.checklists.adminListChecklistsPaginated(auth.actor.companyId, query);
     return reply.success(data, { message: 'Checklists loaded successfully.' });
   });
 
@@ -255,6 +264,13 @@ export const checklistsRoutes: FastifyPluginAsync = async (app) => {
     const auth = requireAdminRole(request);
     const query = submissionsQuerySchema.parse(request.query);
     const data = await app.services.checklists.adminListSubmissions(auth.actor.companyId, query);
+    return reply.success(data, { message: 'Submissions loaded successfully.' });
+  });
+
+  app.get('/admin/checklists/submissions/paginated', async (request, reply) => {
+    const auth = requireAdminRole(request);
+    const query = paginatedSubmissionsQuerySchema.parse(request.query);
+    const data = await app.services.checklists.adminListSubmissionsPaginated(auth.actor.companyId, query);
     return reply.success(data, { message: 'Submissions loaded successfully.' });
   });
 

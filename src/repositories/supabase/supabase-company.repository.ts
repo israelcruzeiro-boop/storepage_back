@@ -1,6 +1,6 @@
 import { normalizeSlug } from '../../lib/normalization.js';
 import type { CompanyRecord } from '../../modules/company/contracts/company.types.js';
-import type { CompanyRepository } from '../contracts/company.repository.js';
+import type { CompanyPaginatedListFilters, CompanyRepository } from '../contracts/company.repository.js';
 import type { TenantRepository, TenantSummary } from '../contracts/tenant.repository.js';
 import type { SupabaseRestClient } from './supabase-rest-client.js';
 import { COMPANY_SELECT, fromCompanyRecord, toCompanyRecord, type CompanyRow } from './supabase-row-mappers.js';
@@ -37,6 +37,39 @@ export class SupabaseCompanyRepository implements CompanyRepository, TenantRepos
     });
 
     return result.rows.map(toCompanyRecord);
+  }
+
+  public async listPaginated(filters: CompanyPaginatedListFilters) {
+    const filterList: Array<{ column: string; operator: 'eq' | 'is'; value: string | boolean | null }> = [];
+
+    if (!filters.includeDeleted) {
+      filterList.push({ column: 'deleted_at', operator: 'is', value: null });
+    }
+
+    if (filters.status === 'ACTIVE') {
+      filterList.push({ column: 'active', operator: 'eq', value: true });
+      filterList.push({ column: 'status', operator: 'eq', value: 'ACTIVE' });
+    } else if (filters.status === 'INACTIVE') {
+      filterList.push({ column: 'status', operator: 'eq', value: 'INACTIVE' });
+    }
+
+    const search = filters.search?.trim();
+    const result = await this.client.select<CompanyRow>('companies', {
+      select: COMPANY_SELECT,
+      filters: filterList,
+      or: search ? `name.ilike.*${search}*,slug.ilike.*${search}*,link_name.ilike.*${search}*` : undefined,
+      order: [{ column: 'created_at', ascending: false }],
+      range: {
+        offset: (filters.page - 1) * filters.limit,
+        limit: filters.limit,
+      },
+      count: true,
+    });
+
+    return {
+      items: result.rows.map(toCompanyRecord),
+      total: result.total ?? result.rows.length,
+    };
   }
 
   public async listBySlug(slug: string): Promise<CompanyRecord[]> {

@@ -12,6 +12,27 @@ export interface IncludeDeletedOptions {
   includeDeleted?: boolean;
 }
 
+export interface PaginatedListOptions {
+  page: number;
+  limit: number;
+  search?: string;
+}
+
+export interface PaginatedListResult<T> {
+  items: T[];
+  total: number;
+}
+
+export interface ChecklistListFilters extends IncludeDeletedOptions, PaginatedListOptions {
+  status?: ChecklistRecord['status'] | 'ALL';
+}
+
+export interface SubmissionListFilters extends PaginatedListOptions {
+  checklistId?: string;
+  userId?: string;
+  status?: ChecklistSubmissionRecord['status'];
+}
+
 export type ChecklistQuestionPatch = Partial<
   Pick<
     ChecklistQuestionRecord,
@@ -30,6 +51,7 @@ export type ChecklistQuestionPatch = Partial<
 export interface ChecklistsRepository {
   /* Checklists */
   listChecklists(companyId: string, options?: IncludeDeletedOptions): Promise<ChecklistRecord[]>;
+  listChecklistsPaginated(companyId: string, filters: ChecklistListFilters): Promise<PaginatedListResult<ChecklistRecord>>;
   findChecklistById(companyId: string, checklistId: string, options?: IncludeDeletedOptions): Promise<ChecklistRecord | null>;
   saveChecklist(checklist: ChecklistRecord): Promise<ChecklistRecord>;
 
@@ -52,6 +74,7 @@ export interface ChecklistsRepository {
 
   /* Submissions */
   listSubmissions(companyId: string, filters?: { checklistId?: string; userId?: string }): Promise<ChecklistSubmissionRecord[]>;
+  listSubmissionsPaginated(companyId: string, filters: SubmissionListFilters): Promise<PaginatedListResult<ChecklistSubmissionRecord>>;
   findSubmissionById(submissionId: string): Promise<ChecklistSubmissionRecord | null>;
   saveSubmission(submission: ChecklistSubmissionRecord): Promise<ChecklistSubmissionRecord>;
 

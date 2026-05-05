@@ -5,8 +5,21 @@ import type {
   SurveyResponseRecord,
 } from '../../modules/surveys/contracts/surveys.types.js';
 
+export interface SurveyListFilters {
+  page: number;
+  limit: number;
+  search?: string;
+  status?: SurveyRecord['status'] | 'ALL';
+}
+
+export interface SurveyListResult {
+  items: SurveyRecord[];
+  total: number;
+}
+
 export interface SurveysRepository {
   listSurveys(companyId: string): Promise<SurveyRecord[]>;
+  listSurveysPaginated(companyId: string, filters: SurveyListFilters): Promise<SurveyListResult>;
   findSurveyById(companyId: string, surveyId: string): Promise<SurveyRecord | null>;
   saveSurvey(survey: SurveyRecord): Promise<SurveyRecord>;
 

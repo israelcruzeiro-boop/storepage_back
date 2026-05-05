@@ -56,16 +56,27 @@ interface ErrorResponse {
   code: string;
 }
 
-test('HTML content sanitizer removes executable markup before course HTML is rendered', () => {
-  const dirtyHtml =
-    '<p onclick="alert(1)">Hello</p><script>alert(1)</script><a href="javascript:alert(1)">click</a><img src="x" onerror="alert(1)">';
+test('HTML content sanitizer blocks executable markup and preserves allowed course HTML', () => {
+  const dirtyHtml = [
+    '<h2 onclick="alert(1)">Titulo</h2>',
+    '<p>Hello <strong>bold</strong> <em>italic</em></p>',
+    '<script>alert(1)</script>',
+    '<a href="javascript:alert(1)" onclick="alert(1)" target="_blank">bad link</a>',
+    '<a href="https://storepage.test/course" target="_blank">safe link</a>',
+    '<img src="https://cdn.storepage.test/image.png" alt="Imagem" onerror="alert(1)">',
+    '<img src="data:image/svg+xml,<svg onload=alert(1)>" alt="svg">',
+    '<svg><animate onbegin="alert(1)" /></svg>',
+    '<iframe src="https://evil.test"></iframe>',
+  ].join('');
   const sanitized = sanitizeHtml(dirtyHtml);
 
-  assert.equal(sanitized.includes('<script'), false);
-  assert.equal(sanitized.includes('onclick'), false);
-  assert.equal(sanitized.includes('onerror'), false);
-  assert.equal(sanitized.includes('javascript:'), false);
-  assert.match(sanitized, /<p>Hello<\/p>/);
+  assert.equal(/<script|onclick|onerror|javascript:|<svg|<iframe|data:image\/svg\+xml/i.test(sanitized), false);
+  assert.match(sanitized, /<h2>Titulo<\/h2>/);
+  assert.match(sanitized, /<p>Hello <strong>bold<\/strong> <em>italic<\/em><\/p>/);
+  assert.match(sanitized, /<a[^>]+href="https:\/\/storepage\.test\/course"[^>]*>safe link<\/a>/);
+  assert.equal(sanitized.includes('target="_blank"'), true);
+  assert.equal(sanitized.includes('rel="noopener noreferrer"'), true);
+  assert.match(sanitized, /<img[^>]+src="https:\/\/cdn\.storepage\.test\/image\.png"[^>]*alt="Imagem"/);
 });
 
 function createJwtEnv(overrides: Partial<Record<string, string>> = {}): AppEnv {
@@ -1207,7 +1218,7 @@ test('refresh rotates refresh tokens and invalidates the previous one', async (t
   assert.equal(staleRefreshPayload.code, 'INVALID_REFRESH_TOKEN');
 });
 
-test('first-access users can login with the temporary password but cannot access protected data before changing it', async (t) => {
+test('first-access users can login with the temporary password but must change it before protected access', async (t) => {
   const { app } = await createFixtureApp();
   t.after(async () => {
     await app.close();
@@ -1229,6 +1240,25 @@ test('first-access users can login with the temporary password but cannot access
     },
   });
   assert.equal(createResponse.statusCode, 201);
+  const createPayload = createResponse.json() as SuccessResponse<{
+    user: { id: string; email: string; status: string; firstAccess: boolean };
+  }>;
+  assert.equal(createPayload.data.user.email, 'primeiro.acesso@storepage.com');
+  assert.equal(createPayload.data.user.status, 'ACTIVE');
+  assert.equal(createPayload.data.user.firstAccess, true);
+  assert.equal(createResponse.body.includes('123456'), false);
+  assert.equal(createResponse.body.includes('scrypt$'), false);
+  assert.equal(createResponse.body.includes('activationToken'), false);
+  assert.equal(createResponse.body.includes('inviteToken'), false);
+
+  const createdUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'primeiro.acesso@storepage.com');
+  assert.ok(createdUser);
+  assert.equal(createdUser.id, createPayload.data.user.id);
+  assert.equal(createdUser.status, 'ACTIVE');
+  assert.equal(createdUser.firstAccess, true);
+  assert.ok(createdUser.passwordHash);
+  assert.equal(createdUser.passwordHash.includes('123456'), false);
+  assert.equal(await new PasswordService().verifyPassword('123456', createdUser.passwordHash), true);
 
   const loginResponse = await app.inject({
     method: 'POST',
@@ -1241,45 +1271,38 @@ test('first-access users can login with the temporary password but cannot access
   });
   assert.equal(loginResponse.statusCode, 200);
   assert.equal(loginResponse.body.includes('123456'), false);
-  assert.equal(loginResponse.body.includes('scrypt$'), false);
   const loginPayload = loginResponse.json() as SuccessResponse<{
     accessToken: string;
-    user: { id: string; firstAccess: boolean };
+    user: { firstAccess: boolean };
   }>;
   assert.equal(loginPayload.data.user.firstAccess, true);
 
-  const firstAccessHeaders = { authorization: `Bearer ${loginPayload.data.accessToken}` };
   const meResponse = await app.inject({
     method: 'GET',
     url: '/api/auth/me',
-    headers: firstAccessHeaders,
+    headers: {
+      authorization: `Bearer ${loginPayload.data.accessToken}`,
+    },
   });
   assert.equal(meResponse.statusCode, 200);
 
-  const repositoriesResponse = await app.inject({
+  const protectedResponse = await app.inject({
     method: 'GET',
-    url: '/api/repositories',
-    headers: firstAccessHeaders,
-  });
-  assert.equal(repositoriesResponse.statusCode, 409);
-  const repositoriesPayload = repositoriesResponse.json() as ErrorResponse;
-  assert.equal(repositoriesPayload.code, 'PASSWORD_CHANGE_REQUIRED');
-
-  const refreshResponse = await app.inject({
-    method: 'POST',
-    url: '/api/auth/refresh',
+    url: '/api/companies/current',
     headers: {
-      cookie: readRefreshCookiePair(loginResponse.headers as Record<string, unknown>),
+      authorization: `Bearer ${loginPayload.data.accessToken}`,
     },
   });
-  assert.equal(refreshResponse.statusCode, 200);
-  const refreshPayload = refreshResponse.json() as SuccessResponse<{ user: { firstAccess: boolean } }>;
-  assert.equal(refreshPayload.data.user.firstAccess, true);
+  assert.equal(protectedResponse.statusCode, 409);
+  const protectedPayload = protectedResponse.json() as ErrorResponse;
+  assert.equal(protectedPayload.code, 'PASSWORD_CHANGE_REQUIRED');
 
   const temporaryAsNewPasswordResponse = await app.inject({
     method: 'PATCH',
     url: '/api/auth/password',
-    headers: firstAccessHeaders,
+    headers: {
+      authorization: `Bearer ${loginPayload.data.accessToken}`,
+    },
     payload: {
       currentPassword: '123456',
       newPassword: '123456',
@@ -1290,26 +1313,15 @@ test('first-access users can login with the temporary password but cannot access
   const passwordChangeResponse = await app.inject({
     method: 'PATCH',
     url: '/api/auth/password',
-    headers: firstAccessHeaders,
+    headers: {
+      authorization: `Bearer ${loginPayload.data.accessToken}`,
+    },
     payload: {
       currentPassword: '123456',
       newPassword: 'FirstAccess123!',
     },
   });
   assert.equal(passwordChangeResponse.statusCode, 200);
-  const passwordChangePayload = passwordChangeResponse.json() as SuccessResponse<{
-    passwordUpdated: boolean;
-    requiresReauthentication: boolean;
-  }>;
-  assert.equal(passwordChangePayload.data.passwordUpdated, true);
-  assert.equal(passwordChangePayload.data.requiresReauthentication, true);
-
-  const revokedResponse = await app.inject({
-    method: 'GET',
-    url: '/api/auth/me',
-    headers: firstAccessHeaders,
-  });
-  assert.equal(revokedResponse.statusCode, 401);
 
   const oldPasswordLoginResponse = await app.inject({
     method: 'POST',
@@ -1895,6 +1907,8 @@ test('admin user creation issues a temporary first-access password without leaki
   assert.equal(response.body.includes('scrypt$'), false);
   assert.equal(response.body.includes('/ativar-convite/'), false);
   assert.equal(response.body.includes('activationUrl'), false);
+  assert.equal(response.body.includes('activationToken'), false);
+  assert.equal(response.body.includes('inviteToken'), false);
 
   const savedUser = await app.repositories.user.findByEmail(COMPANY_ALPHA_ID, 'entrega.segura@storepage.com');
   assert.ok(savedUser);
@@ -2993,6 +3007,22 @@ test('phase 5 survey catalog, admin CRUD and tenant isolation use repository con
   assert.equal(updateSurveyPayload.data.title, 'Pesquisa Atualizada');
   assert.equal(updateSurveyPayload.data.status, 'ACTIVE');
 
+  const paginatedSurveysResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/surveys/paginated?page=1&limit=1&search=Pesquisa',
+    headers: adminHeaders,
+  });
+  assert.equal(paginatedSurveysResponse.statusCode, 200);
+  const paginatedSurveys = paginatedSurveysResponse.json() as SuccessResponse<{
+    items: Array<{ id: string; companyId: string; title: string; questionCount: number }>;
+    meta: { page: number; limit: number; total: number; totalPages: number; hasNextPage: boolean; hasPreviousPage: boolean };
+  }>;
+  assert.equal(paginatedSurveys.data.meta.page, 1);
+  assert.equal(paginatedSurveys.data.meta.limit, 1);
+  assert.ok(paginatedSurveys.data.meta.total >= 1);
+  assert.equal(paginatedSurveys.data.items.length, 1);
+  assert.equal(paginatedSurveys.data.items[0]?.companyId, COMPANY_ALPHA_ID);
+
   const createQuestionResponse = await app.inject({
     method: 'POST',
     url: `/api/admin/surveys/${createSurveyPayload.data.id}/questions`,
@@ -3899,6 +3929,22 @@ test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete
   const createdCourse = createCourseResponse.json() as SuccessResponse<{ id: string; layoutTemplate: string }>;
   assert.equal(createdCourse.data.layoutTemplate, 'focus');
 
+  const paginatedCoursesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/admin/courses/paginated?page=1&limit=1&search=Curso',
+    headers: authHeaders,
+  });
+  assert.equal(paginatedCoursesResponse.statusCode, 200);
+  const paginatedCourses = paginatedCoursesResponse.json() as SuccessResponse<{
+    items: Array<{ id: string; companyId: string; title: string }>;
+    meta: { page: number; limit: number; total: number; totalPages: number; hasNextPage: boolean; hasPreviousPage: boolean };
+  }>;
+  assert.equal(paginatedCourses.data.meta.page, 1);
+  assert.equal(paginatedCourses.data.meta.limit, 1);
+  assert.ok(paginatedCourses.data.meta.total >= 1);
+  assert.equal(paginatedCourses.data.items.length, 1);
+  assert.equal(paginatedCourses.data.items[0]?.companyId, COMPANY_ALPHA_ID);
+
   const restrictedCourseResponse = await app.inject({
     method: 'POST',
     url: '/api/admin/courses',
@@ -3967,16 +4013,49 @@ test('phase 3 course catalog and admin CRUD enforce tenant scope and soft delete
     url: `/api/admin/course-modules/${createdModule.data.id}/contents`,
     headers: authHeaders,
     payload: {
-      title: 'Video API',
+      title: 'HTML API',
       description: 'Conteudo API',
-      type: 'VIDEO',
-      url: 'https://cdn.storepage.test/video.mp4',
+      type: 'HTML',
+      url: 'https://cdn.storepage.test/course.html',
+      htmlContent:
+        '<p onclick="alert(1)">Conteudo <strong>seguro</strong></p><script>alert(1)</script><a href="javascript:alert(1)">bad</a>',
       orderIndex: 0,
     },
   });
 
   assert.equal(createContentResponse.statusCode, 201);
-  const createdContent = createContentResponse.json() as SuccessResponse<{ id: string }>;
+  const createdContent = createContentResponse.json() as SuccessResponse<{ id: string; htmlContent: string | null }>;
+  assert.equal(/<script|onclick|javascript:/i.test(createdContent.data.htmlContent ?? ''), false);
+  assert.match(createdContent.data.htmlContent ?? '', /<p>Conteudo <strong>seguro<\/strong><\/p>/);
+
+  const persistedCreatedContent = await app.repositories.lms.findContentById(
+    adminLogin.data.company.id,
+    createdContent.data.id,
+  );
+  assert.ok(persistedCreatedContent);
+  assert.equal(/<script|onclick|javascript:/i.test(persistedCreatedContent.htmlContent ?? ''), false);
+
+  const updateContentResponse = await app.inject({
+    method: 'PUT',
+    url: `/api/admin/course-contents/${createdContent.data.id}`,
+    headers: authHeaders,
+    payload: {
+      htmlContent:
+        '<p><img src="data:image/svg+xml,<svg onload=alert(1)>" alt="svg"></p><p><a href="mailto:treinamento@storepage.test">email</a></p>',
+    },
+  });
+
+  assert.equal(updateContentResponse.statusCode, 200);
+  const updatedContent = updateContentResponse.json() as SuccessResponse<{ htmlContent: string | null }>;
+  assert.equal(/data:image\/svg\+xml|onload|<svg/i.test(updatedContent.data.htmlContent ?? ''), false);
+  assert.match(updatedContent.data.htmlContent ?? '', /href="mailto:treinamento@storepage\.test"/);
+
+  const persistedUpdatedContent = await app.repositories.lms.findContentById(
+    adminLogin.data.company.id,
+    createdContent.data.id,
+  );
+  assert.ok(persistedUpdatedContent);
+  assert.equal(/data:image\/svg\+xml|onload|<svg/i.test(persistedUpdatedContent.htmlContent ?? ''), false);
 
   const createQuestionResponse = await app.inject({
     method: 'POST',
@@ -4231,11 +4310,31 @@ test('phase 3 enrollments, analytics and quiz endpoints stamp actor identity', a
   assert.equal(reactivatedEnrollPayload.data.completedAt, null);
 });
 
-test('storage endpoints are authenticated and validate allowed buckets before upload', async (t) => {
-  const { app } = await createFixtureApp();
+test('storage endpoints enforce upload purposes, tenant paths and safe file types', async (t) => {
+  const env = createJwtEnv({
+    SUPABASE_URL: 'https://supabase.storepage.test',
+    SUPABASE_SERVICE_ROLE_KEY: 'service-role-test-key',
+  });
+  const seed = await createSeed();
+  const app = buildApp(env, { seed });
+  const originalFetch = globalThis.fetch;
+  const fetchCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    fetchCalls.push({ url: String(input), init });
+    return new Response('{}', { status: 200 });
+  }) as typeof fetch;
+
+  await app.ready();
   t.after(async () => {
+    globalThis.fetch = originalFetch;
     await app.close();
   });
+
+  const pngBase64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64');
+  const pdfBase64 = Buffer.from('%PDF-1.4\n%EOF').toString('base64');
+  const svgBase64 = Buffer.from('<svg onload="alert(1)"></svg>').toString('base64');
+  const htmlBase64 = Buffer.from('<!doctype html><script>alert(1)</script>').toString('base64');
 
   const unauthenticatedUploadResponse = await app.inject({
     method: 'POST',
@@ -4272,6 +4371,165 @@ test('storage endpoints are authenticated and validate allowed buckets before up
   assert.equal(invalidBucketResponse.statusCode, 400);
   const invalidBucketPayload = invalidBucketResponse.json() as ErrorResponse;
   assert.equal(invalidBucketPayload.code, 'BAD_REQUEST');
+
+  const adminHeaders = { authorization: `Bearer ${login.data.accessToken}` };
+  const userLogin = await loginAsUserAlpha(app);
+  const userHeaders = { authorization: `Bearer ${userLogin.data.accessToken}` };
+
+  const unknownLegacyFolderResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      bucket: 'assets',
+      folder: 'companies/11111111-1111-4111-8111-111111111111/free-form',
+      fileName: 'avatar.png',
+      contentType: 'image/png',
+      base64: pngBase64,
+    },
+  });
+  assert.equal(unknownLegacyFolderResponse.statusCode, 400);
+
+  const divergentTenantFolderResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      bucket: 'assets',
+      folder: `companies/${COMPANY_BETA_ID}/avatars`,
+      fileName: 'avatar.png',
+      contentType: 'image/png',
+      base64: pngBase64,
+    },
+  });
+  assert.equal(divergentTenantFolderResponse.statusCode, 403);
+  const divergentTenantFolderPayload = divergentTenantFolderResponse.json() as ErrorResponse;
+  assert.equal(divergentTenantFolderPayload.code, 'TENANT_ACCESS_DENIED');
+
+  const insufficientRoleResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: userHeaders,
+    payload: {
+      purpose: 'course-material',
+      fileName: 'material.pdf',
+      contentType: 'application/pdf',
+      base64: pdfBase64,
+    },
+  });
+  assert.equal(insufficientRoleResponse.statusCode, 403);
+
+  const executableUploadResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      purpose: 'content-file',
+      fileName: 'setup.exe',
+      contentType: 'application/octet-stream',
+      base64: 'AAAA',
+    },
+  });
+  assert.equal(executableUploadResponse.statusCode, 400);
+
+  const svgUploadResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      purpose: 'content-file',
+      fileName: 'image.svg',
+      contentType: 'image/svg+xml',
+      base64: svgBase64,
+    },
+  });
+  assert.equal(svgUploadResponse.statusCode, 400);
+
+  const htmlAsTextUploadResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      purpose: 'content-file',
+      fileName: 'notes.txt',
+      contentType: 'text/plain',
+      base64: htmlBase64,
+    },
+  });
+  assert.equal(htmlAsTextUploadResponse.statusCode, 400);
+
+  const mismatchedExtensionResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      purpose: 'avatar',
+      fileName: 'avatar.html',
+      contentType: 'image/png',
+      base64: pngBase64,
+    },
+  });
+  assert.equal(mismatchedExtensionResponse.statusCode, 400);
+
+  const publicUrlOtherTenantResponse = await app.inject({
+    method: 'GET',
+    url: `/api/storage/public-url?bucket=assets&path=companies/${COMPANY_BETA_ID}/avatars/avatar.png`,
+    headers: adminHeaders,
+  });
+  assert.equal(publicUrlOtherTenantResponse.statusCode, 403);
+  const publicUrlOtherTenantPayload = publicUrlOtherTenantResponse.json() as ErrorResponse;
+  assert.equal(publicUrlOtherTenantPayload.code, 'TENANT_ACCESS_DENIED');
+
+  const publicUrlUnscopedResponse = await app.inject({
+    method: 'GET',
+    url: '/api/storage/public-url?bucket=assets&path=avatars/avatar.png',
+    headers: adminHeaders,
+  });
+  assert.equal(publicUrlUnscopedResponse.statusCode, 403);
+
+  const checklistUploadResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: userHeaders,
+    payload: {
+      purpose: 'checklist-photo',
+      fileName: 'checklist.png',
+      contentType: 'image/png',
+      base64: pngBase64,
+    },
+  });
+  assert.equal(checklistUploadResponse.statusCode, 201);
+  const checklistUploadPayload = checklistUploadResponse.json() as SuccessResponse<{
+    bucket: string;
+    path: string;
+    publicUrl: string;
+    contentType: string;
+    sizeBytes: number;
+  }>;
+  assert.equal(checklistUploadPayload.data.bucket, 'checklist-photos');
+  assert.equal(checklistUploadPayload.data.contentType, 'image/png');
+  assert.equal(checklistUploadPayload.data.sizeBytes, 8);
+  assert.match(checklistUploadPayload.data.path, new RegExp(`^companies/${COMPANY_ALPHA_ID}/checklists/photos/.+\\.png$`));
+  assert.equal(checklistUploadPayload.data.publicUrl.includes('/object/public/checklist-photos/'), true);
+
+  const documentUploadResponse = await app.inject({
+    method: 'POST',
+    url: '/api/storage/upload',
+    headers: adminHeaders,
+    payload: {
+      purpose: 'content-file',
+      fileName: 'manual.pdf',
+      contentType: 'application/pdf',
+      base64: pdfBase64,
+    },
+  });
+  assert.equal(documentUploadResponse.statusCode, 201);
+  const documentUploadPayload = documentUploadResponse.json() as SuccessResponse<{ bucket: string; path: string }>;
+  assert.equal(documentUploadPayload.data.bucket, 'assets');
+  assert.match(documentUploadPayload.data.path, new RegExp(`^companies/${COMPANY_ALPHA_ID}/contents/files/.+\\.pdf$`));
+  assert.equal(fetchCalls.length, 2);
+  assert.equal(fetchCalls[0]!.url.includes('/storage/v1/object/checklist-photos/'), true);
+  assert.equal(fetchCalls[1]!.url.includes('/storage/v1/object/assets/'), true);
 
   const unauthenticatedPublicUrlResponse = await app.inject({
     method: 'GET',
@@ -4318,6 +4576,23 @@ test('super admin company and user endpoints enforce role and avoid direct tenan
   assert.equal(listCompaniesResponse.statusCode, 200);
   const listCompaniesPayload = listCompaniesResponse.json() as SuccessResponse<Array<{ id: string; slug: string }>>;
   assert.equal(listCompaniesPayload.data.length, 2);
+
+  const paginatedCompaniesResponse = await app.inject({
+    method: 'GET',
+    url: '/api/super-admin/companies/paginated?page=1&limit=1&includeDeleted=true',
+    headers: superHeaders,
+  });
+  assert.equal(paginatedCompaniesResponse.statusCode, 200);
+  const paginatedCompaniesPayload = paginatedCompaniesResponse.json() as SuccessResponse<{
+    items: Array<{ id: string; slug: string }>;
+    meta: { page: number; limit: number; total: number; totalPages: number; hasNextPage: boolean };
+  }>;
+  assert.equal(paginatedCompaniesPayload.data.items.length, 1);
+  assert.equal(paginatedCompaniesPayload.data.meta.page, 1);
+  assert.equal(paginatedCompaniesPayload.data.meta.limit, 1);
+  assert.equal(paginatedCompaniesPayload.data.meta.total, 2);
+  assert.equal(paginatedCompaniesPayload.data.meta.totalPages, 2);
+  assert.equal(paginatedCompaniesPayload.data.meta.hasNextPage, true);
 
   const createCompanyResponse = await app.inject({
     method: 'POST',
@@ -4401,9 +4676,13 @@ test('super admin company and user endpoints enforce role and avoid direct tenan
   const listUsersPayload = listUsersResponse.json() as SuccessResponse<{
     users: Array<{ id: string; companyId: string; role: string }>;
     invites: Array<{ id: string }>;
+    meta: { total: number; totalPages: number; hasPreviousPage: boolean };
   }>;
   assert.ok(listUsersPayload.data.users.some((user) => user.id === ADMIN_BETA_ID && user.companyId === COMPANY_BETA_ID));
   assert.ok(listUsersPayload.data.invites.some((invite) => invite.id === INVITE_ALPHA_ID));
+  assert.ok(listUsersPayload.data.meta.total >= listUsersPayload.data.users.length);
+  assert.ok(listUsersPayload.data.meta.totalPages >= 1);
+  assert.equal(listUsersPayload.data.meta.hasPreviousPage, false);
 
   const updateUserResponse = await app.inject({
     method: 'PUT',

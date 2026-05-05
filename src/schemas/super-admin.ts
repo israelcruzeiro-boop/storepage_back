@@ -17,6 +17,11 @@ export const superAdminCompaniesQuerySchema = z.object({
   includeDeleted: z.coerce.boolean().default(false),
 });
 
+export const superAdminCompaniesPaginatedQuerySchema = paginationQuerySchema.extend({
+  includeDeleted: z.coerce.boolean().default(false),
+  status: z.enum(['ALL', 'ACTIVE', 'INACTIVE']).default('ALL'),
+});
+
 export const superAdminUsersQuerySchema = paginationQuerySchema.extend({
   status: z.enum(['ALL', ...userStatusValues]).default('ALL'),
   includeDeleted: z.coerce.boolean().default(false),

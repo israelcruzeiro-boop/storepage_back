@@ -12,8 +12,21 @@ import type {
   QuizRecord,
 } from '../../modules/lms/contracts/lms.types.js';
 
+export interface CourseListFilters {
+  page: number;
+  limit: number;
+  search?: string;
+  status?: CourseRecord['status'] | 'ALL';
+}
+
+export interface CourseListResult {
+  items: CourseRecord[];
+  total: number;
+}
+
 export interface LmsRepository {
   listCourses(companyId: string): Promise<CourseRecord[]>;
+  listCoursesPaginated(companyId: string, filters: CourseListFilters): Promise<CourseListResult>;
   findCourseById(companyId: string, courseId: string): Promise<CourseRecord | null>;
   saveCourse(course: CourseRecord): Promise<CourseRecord>;
 

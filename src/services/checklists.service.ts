@@ -11,7 +11,11 @@ import type {
   ChecklistSectionRecord,
   ChecklistSubmissionRecord,
 } from '../modules/checklists/contracts/checklists.types.js';
-import type { ChecklistsRepository } from '../repositories/contracts/checklists.repository.js';
+import type {
+  ChecklistListFilters,
+  ChecklistsRepository,
+  SubmissionListFilters,
+} from '../repositories/contracts/checklists.repository.js';
 
 /* ---------- Input types ---------- */
 interface ChecklistInput {
@@ -308,6 +312,14 @@ export class ChecklistsService {
     return checklists.map(this.toChecklistView);
   }
 
+  public async adminListChecklistsPaginated(companyId: string, filters: ChecklistListFilters) {
+    const { items, total } = await this.repository.listChecklistsPaginated(companyId, filters);
+    return {
+      items: items.map(this.toChecklistView),
+      meta: this.toPaginationMeta(filters.page, filters.limit, total),
+    };
+  }
+
   public async createChecklist(companyId: string, input: ChecklistInput) {
     const now = new Date().toISOString();
     const checklist: ChecklistRecord = {
@@ -515,6 +527,18 @@ export class ChecklistsService {
       .map((submission) => this.toSubmissionView(submission, checklistById.get(submission.checklistId)));
   }
 
+  public async adminListSubmissionsPaginated(companyId: string, filters: SubmissionListFilters) {
+    const [{ items, total }, checklists] = await Promise.all([
+      this.repository.listSubmissionsPaginated(companyId, filters),
+      this.repository.listChecklists(companyId, { includeDeleted: true }),
+    ]);
+    const checklistById = new Map(checklists.map((checklist) => [checklist.id, checklist]));
+    return {
+      items: items.map((submission) => this.toSubmissionView(submission, checklistById.get(submission.checklistId))),
+      meta: this.toPaginationMeta(filters.page, filters.limit, total),
+    };
+  }
+
   public async adminGetSubmission(companyId: string, submissionId: string) {
     const submission = await this.repository.findSubmissionById(submissionId);
     if (!submission || submission.companyId !== companyId || submission.deletedAt) {
@@ -689,6 +713,18 @@ export class ChecklistsService {
     const plan = await this.repository.findActionPlanById(companyId, actionPlanId);
     if (!plan) throw new AppError(404, 'NOT_FOUND', 'Action plan not found.');
     return plan;
+  }
+
+  private toPaginationMeta(page: number, limit: number, total: number) {
+    const totalPages = Math.ceil(total / limit);
+    return {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    };
   }
 
   /* ======================== View mappers ======================== */

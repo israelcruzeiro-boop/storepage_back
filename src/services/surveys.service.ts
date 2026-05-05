@@ -9,7 +9,7 @@ import type {
 } from '../modules/surveys/contracts/surveys.types.js';
 import type { SubmitSurveyAnswerInput, SubmitSurveyResponseResult } from '../repositories/contracts/legacy-rpc.repository.js';
 import type { StructureRepository } from '../repositories/contracts/structure.repository.js';
-import type { SurveysRepository } from '../repositories/contracts/surveys.repository.js';
+import type { SurveyListFilters, SurveysRepository } from '../repositories/contracts/surveys.repository.js';
 import type { UserRepository } from '../repositories/contracts/user.repository.js';
 import type { OrgTopLevelRecord, OrgUnitRecord } from '../modules/structure/contracts/structure.types.js';
 import type { UserRecord } from '../modules/user/contracts/user.types.js';
@@ -236,6 +236,18 @@ export class SurveysService {
     };
     await this.access.assertValidAccessTarget(actor.companyId, survey);
     return this.toSurveyView(await this.repository.saveSurvey(survey));
+  }
+
+  public async adminListSurveysPaginated(actor: AuthenticatedActor, filters: SurveyListFilters) {
+    const { items, total } = await this.repository.listSurveysPaginated(actor.companyId, filters);
+    const questionCounts = await Promise.all(items.map((survey) => this.repository.listQuestions(survey.id)));
+    return {
+      items: items.map((survey, index) => ({
+        ...this.toSurveyView(survey),
+        questionCount: questionCounts[index]?.length ?? 0,
+      })),
+      meta: this.toPaginationMeta(filters.page, filters.limit, total),
+    };
   }
 
   public async updateSurvey(actor: AuthenticatedActor, surveyId: string, input: SurveyUpdateInput) {
@@ -505,6 +517,18 @@ export class SurveysService {
     if (!question) throw new AppError(404, 'NOT_FOUND', 'Survey question not found.');
     await this.getTenantSurvey(companyId, question.surveyId);
     return question;
+  }
+
+  private toPaginationMeta(page: number, limit: number, total: number) {
+    const totalPages = Math.ceil(total / limit);
+    return {
+      page,
+      limit,
+      total,
+      totalPages,
+      hasNextPage: page < totalPages,
+      hasPreviousPage: page > 1,
+    };
   }
 
   private async enrichResponses(responses: SurveyResponseRecord[]) {

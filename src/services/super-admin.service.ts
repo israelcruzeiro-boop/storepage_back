@@ -36,6 +36,14 @@ export interface SuperAdminListFilters {
   companyId?: string;
 }
 
+export interface SuperAdminCompanyListFilters {
+  page: number;
+  limit: number;
+  search?: string;
+  status?: 'ALL' | 'ACTIVE' | 'INACTIVE';
+  includeDeleted?: boolean;
+}
+
 interface CompanyInput {
   name: string;
   slug?: string;
@@ -79,6 +87,26 @@ export class SuperAdminService {
     this.assertSuperAdmin(actor);
     const companies = await this.companyRepository.list({ includeDeleted });
     return companies.map((company) => this.toCompanyView(company));
+  }
+
+  public async listCompaniesPaginated(actor: AuthenticatedActor, filters: SuperAdminCompanyListFilters) {
+    this.assertSuperAdmin(actor);
+    const result = await this.companyRepository.listPaginated(filters);
+    const totalPages = Math.ceil(result.total / filters.limit);
+
+    return {
+      items: result.items.map((company) => this.toCompanyView(company)),
+      meta: {
+        page: filters.page,
+        limit: filters.limit,
+        total: result.total,
+        totalPages,
+        hasNextPage: filters.page < totalPages,
+        hasPreviousPage: filters.page > 1,
+        status: filters.status ?? 'ALL',
+        search: filters.search ?? null,
+      },
+    };
   }
 
   public async createCompany(actor: AuthenticatedActor, input: CompanyInput): Promise<CompanyAuthenticatedView> {
@@ -205,6 +233,8 @@ export class SuperAdminService {
       this.userRepository.listAll(filters),
       this.inviteRepository.listAll(filters),
     ]);
+    const total = Math.max(usersResult.total, invitesResult.total);
+    const totalPages = Math.ceil(total / filters.limit);
 
     return {
       users: usersResult.items.map(toUserView),
@@ -212,6 +242,10 @@ export class SuperAdminService {
       meta: {
         page: filters.page,
         limit: filters.limit,
+        total,
+        totalPages,
+        hasNextPage: filters.page < totalPages,
+        hasPreviousPage: filters.page > 1,
         totalUsers: usersResult.total,
         totalInvites: invitesResult.total,
         status: filters.status ?? 'ALL',

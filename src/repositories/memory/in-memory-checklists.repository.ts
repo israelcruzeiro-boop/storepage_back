@@ -7,7 +7,7 @@ import type {
   ChecklistSectionRecord,
   ChecklistSubmissionRecord,
 } from '../../modules/checklists/contracts/checklists.types.js';
-import type { ChecklistQuestionPatch, ChecklistsRepository } from '../contracts/checklists.repository.js';
+import type { ChecklistListFilters, ChecklistQuestionPatch, ChecklistsRepository, SubmissionListFilters } from '../contracts/checklists.repository.js';
 import type { InMemoryStore } from './in-memory-store.js';
 
 export class InMemoryChecklistsRepository implements ChecklistsRepository {
@@ -18,6 +18,25 @@ export class InMemoryChecklistsRepository implements ChecklistsRepository {
     return this.store
       .listChecklists()
       .filter((c) => c.companyId === companyId && (options?.includeDeleted || !c.deletedAt));
+  }
+
+  public async listChecklistsPaginated(companyId: string, filters: ChecklistListFilters) {
+    const search = filters.search?.trim().toLowerCase();
+    const filtered = this.store
+      .listChecklists()
+      .filter((checklist) => checklist.companyId === companyId && (filters.includeDeleted || !checklist.deletedAt))
+      .filter((checklist) => !filters.status || filters.status === 'ALL' || checklist.status === filters.status)
+      .filter((checklist) => {
+        if (!search) return true;
+        return [checklist.title, checklist.description ?? ''].some((value) => value.toLowerCase().includes(search));
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    const offset = (filters.page - 1) * filters.limit;
+    return {
+      items: filtered.slice(offset, offset + filters.limit),
+      total: filtered.length,
+    };
   }
 
   public async findChecklistById(companyId: string, checklistId: string, options?: { includeDeleted?: boolean }): Promise<ChecklistRecord | null> {
@@ -108,6 +127,29 @@ export class InMemoryChecklistsRepository implements ChecklistsRepository {
         if (filters?.userId && s.userId !== filters.userId) return false;
         return true;
       });
+  }
+
+  public async listSubmissionsPaginated(companyId: string, filters: SubmissionListFilters) {
+    const search = filters.search?.trim().toLowerCase();
+    const checklistById = new Map(this.store.listChecklists().map((checklist) => [checklist.id, checklist]));
+    const filtered = this.store
+      .listChecklistSubmissions()
+      .filter((submission) => {
+        if (submission.companyId !== companyId || submission.deletedAt) return false;
+        if (filters.checklistId && submission.checklistId !== filters.checklistId) return false;
+        if (filters.userId && submission.userId !== filters.userId) return false;
+        if (filters.status && submission.status !== filters.status) return false;
+        if (!search) return true;
+        const checklist = checklistById.get(submission.checklistId);
+        return [submission.id, checklist?.title ?? ''].some((value) => value.toLowerCase().includes(search));
+      })
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+
+    const offset = (filters.page - 1) * filters.limit;
+    return {
+      items: filtered.slice(offset, offset + filters.limit),
+      total: filtered.length,
+    };
   }
 
   public async findSubmissionById(submissionId: string): Promise<ChecklistSubmissionRecord | null> {

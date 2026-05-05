@@ -63,6 +63,8 @@ export class AdminUsersService {
       actor.companyId,
       invitesResult.items.map((invite) => invite.id),
     );
+    const total = Math.max(usersResult.total, invitesResult.total);
+    const totalPages = Math.ceil(total / filters.limit);
 
     return {
       users: usersResult.items.map(toUserView),
@@ -73,6 +75,10 @@ export class AdminUsersService {
       meta: {
         page: filters.page,
         limit: filters.limit,
+        total,
+        totalPages,
+        hasNextPage: filters.page < totalPages,
+        hasPreviousPage: filters.page > 1,
         totalUsers: usersResult.total,
         totalInvites: invitesResult.total,
         status: filters.status ?? 'ALL',
